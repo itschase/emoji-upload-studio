@@ -2,7 +2,7 @@
 
 A local dashboard for preparing large emoji uploads. Import PNG and GIF images, edit each image's name, prioritized tags, category, license, and description, then start a queue of any size. A small Tampermonkey worker uses the signed-in [Emoji.gg submission page](https://emoji.gg/submit) to send groups of up to ten, respecting the site's form limit. The studio tracks results and resumes from its saved position.
 
-The dashboard is the working view. The Emoji.gg worker tab stays open in the background. On the Emoji.gg upload page, the worker shows a small status panel with an **Open Upload Studio ↗** link that opens the dashboard in a new tab.
+The dashboard is the working view. The Emoji.gg worker tab stays open in the background. On the Emoji.gg upload page, the worker shows a small status panel with submitted, queued, and failed counts, a pause or resume control, and an **Open Upload Studio ↗** link that opens the dashboard in a new tab.
 
 ## Why this exists
 
