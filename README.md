@@ -44,7 +44,8 @@ Enter the number of pending images to queue, or enter `0` for all pending images
 - Each image preview on Emoji.gg is hashed and matched to the source file before metadata is entered, so reordered files receive the correct fields.
 - A manifest row becomes `submitted` only when the site's per-item result reports success. Explicit failures become `retry`; ambiguous outcomes become `uncertain` and are not automatically resent.
 - Queue position is saved in `.upload-queue` under the configured root. If the server stops during a submission, that in-flight batch is marked `uncertain` for review rather than duplicated automatically.
-- The server records which tab owns each batch. A tab cannot read or report another tab's lease, and two tabs cannot receive the same images. If a tab disappears mid-submission, its lease stays unresolved until the server is restarted; the restart marks it `uncertain` for review.
+- The server records which tab owns each batch. A tab cannot read or report another tab's lease, and two tabs cannot receive the same images. Restarting the server with an in-flight batch marks that batch `uncertain` for review.
+- The dashboard's connected-tab count uses live worker check-ins. A worker keeps checking in while it submits a batch. If its tab disappears for more than two minutes, that batch becomes `uncertain` for review; it is never silently retried.
 - A pack folder receives the `.uploaded-` prefix only after every manifest row is `submitted`.
 - For an unattended run, `node auto-finish.mjs` watches the queue, performs one bounded pass over explicit `retry` rows, and writes `.upload-queue/auto-finish-report.json`. It leaves `uncertain` rows for review.
 

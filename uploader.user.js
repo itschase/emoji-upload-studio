@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.4.2
+// @version      0.4.3
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -94,13 +94,22 @@
     const resultByItem=new Map(results.map((el,i)=>[ordered[i],{status:el.querySelector('.badge.bg-success')?'submitted':'retry',note:el.innerText.slice(-180)}]));
     return batch.items.map(item=>resultByItem.get(item));
   }
-  let busy=false,legacyMode=false;
+  let busy=false,legacyMode=false,helloPromise=null;
+  async function announce(){
+    if(helloPromise)return helloPromise;
+    helloPromise=(async()=>{
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.4.3',heartbeat:true,clientId});
+      workerSession=hello.session;
+      for(let i=0;i<hello.spawn;i++)GM_openInTab(`https://emoji.gg/submit?upload_studio_worker=${crypto.randomUUID()}`,{active:false,insert:true});
+      return hello;
+    })();
+    try{return await helloPromise}finally{helloPromise=null}
+  }
   async function tick() {
     if(busy||legacyMode)return;busy=true;
     try{
       if(!token){token=await pair();GM_setValue('queueToken',token);say('paired with local studio');}
-      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.4.2',clientId});workerSession=hello.session;
-      for(let i=0;i<hello.spawn;i++)GM_openInTab(`https://emoji.gg/submit?upload_studio_worker=${crypto.randomUUID()}`,{active:false,insert:true});
+      await announce();
       const status=await request('status');showQueue(status);if(!status.running||status.paused){say(status.paused?'paused':'idle');return;}
       if(location.pathname==='/submit/sticker'){location.href='/submit';return;}
       if(location.pathname!=='/submit')return;
@@ -116,5 +125,6 @@
       }
     }catch(error){const old=legacyWorker();if(old){old.append(studioLink);legacyMode=true;badge.remove();setInterval(()=>{const current=legacyWorker();if(current)current.append(studioLink);},1000);return;}if(/Invalid queue token/.test(error.message)){token='';GM_setValue('queueToken','');workerSession='';}queueText.textContent='';queueButton.style.display='none';say(error.message);}finally{busy=false;}
   }
+  setInterval(()=>{if(busy&&token&&!legacyMode)announce().catch(()=>{});},5000);
   setInterval(tick,2500);tick();
 })();

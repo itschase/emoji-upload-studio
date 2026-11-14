@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.4.2';
+const STUDIO_VERSION='0.4.3';
 
 let localConfig={};
 try { localConfig=JSON.parse(await fs.readFile(new URL('./config.local.json',import.meta.url),'utf8')); } catch { /* set root through environment instead */ }
@@ -31,8 +31,9 @@ let checkingUpdate=false;
 let updateMessage='';
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
-function activeWorkers(){return [...workers.entries()].filter(([id,w])=>Date.now()-w.seenAt<15000||state.leases.some(lease=>lease.owner===id)).length;}
-function workerSummaries(){return [...workers.entries()].filter(([id,w])=>Date.now()-w.seenAt<15000||state.leases.some(lease=>lease.owner===id)).map(([id,w])=>({id:id.slice(0,8),version:w.scriptVersion||'older',inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0}));}
+function isConnected(worker){return Date.now()-worker.seenAt<15000;}
+function activeWorkers(){return [...workers.values()].filter(isConnected).length;}
+function workerSummaries(){return [...workers.entries()].filter(([id,w])=>isConnected(w)||state.leases.some(lease=>lease.owner===id)).map(([id,w])=>({id:id.slice(0,8),version:w.scriptVersion||'older',connected:isConnected(w),inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0}));}
 try { state = { ...state, ...JSON.parse(await fs.readFile(STATE_FILE, 'utf8')) }; }
 catch { /* first run */ }
 try { state.queued = JSON.parse(await fs.readFile(QUEUE_FILE,'utf8')); }
@@ -143,7 +144,7 @@ const server=http.createServer(async(req,res)=>{
     if(!auth)return json(res,403,{error:'Invalid queue token'});
     if(u.pathname==='/api/status')return json(res,200,{...state,protocolVersion:'0.4.0',studioVersion:STUDIO_VERSION,updateMessage,root:ROOT,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:activeWorkers()>0,activeWorkers:activeWorkers(),workerTabs:workerSummaries()});
     if(u.pathname==='/api/enable-pairing'&&req.method==='POST'){pairingUntil=Date.now()+60000;return json(res,200,{ok:true,expiresInSeconds:60});}
-    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=String(hello.scriptVersion||'older').slice(0,24);const spawn=state.running&&state.spawnPending>0?Math.max(0,state.workers-activeWorkers()):0;state.spawnPending=0;return json(res,200,{ok:true,session:worker.session,spawn});});
+    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=String(hello.scriptVersion||'older').slice(0,24);worker.supportsHeartbeat=hello.heartbeat===true;const spawn=state.running&&state.spawnPending>0?Math.max(0,state.workers-activeWorkers()):0;state.spawnPending=0;return json(res,200,{ok:true,session:worker.session,spawn});});
     if(u.pathname==='/api/catalog')return json(res,200,await catalog(Math.max(0,Number(u.searchParams.get('offset')||0)),Math.min(100,Math.max(1,Number(u.searchParams.get('limit')||40))),u.searchParams.get('folder')||'',u.searchParams.get('status')||'pending'));
     if(u.pathname==='/api/import'&&req.method==='POST')return json(res,200,await serial(()=>importImage(req,u)));
     if(u.pathname==='/api/edit'&&req.method==='POST')return json(res,200,{item:await serial(async()=>editRow(await body(req)))});
@@ -203,3 +204,17 @@ async function checkStudioUpdate(){
 }
 const updateTimer=setInterval(checkStudioUpdate,15*60*1000);
 updateTimer.unref();
+async function recoverDisconnectedBatches(){
+  await serial(async()=>{
+    const stale=state.leases.filter(lease=>{const worker=workers.get(lease.owner);return worker?.supportsHeartbeat&&Date.now()-worker.seenAt>120000;});
+    if(!stale.length)return;
+    for(const lease of stale)await updateManifest(lease.items,lease.items.map(()=>({status:'uncertain',note:'Worker tab disconnected during submission; review result before retry'})));
+    state.leases=state.leases.filter(lease=>!stale.includes(lease));
+    state.failed+=stale.reduce((sum,lease)=>sum+lease.items.length,0);
+    state.message=`${state.failed} unresolved; ${stale.length} disconnected batches need review`;
+    if(state.cursor>=state.queued.length&&!state.leases.length)state.running=false;
+    await save();
+  }).catch(error=>console.error('Could not recover disconnected batch:',error));
+}
+const recoveryTimer=setInterval(recoverDisconnectedBatches,30000);
+recoveryTimer.unref();

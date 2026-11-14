@@ -26,7 +26,7 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     assert.equal(theme.headers.get('content-type'),'text/css; charset=utf-8');
     assert.match(await theme.text(),/backdrop-filter:blur/);
     assert.equal(status.protocolVersion,'0.4.0');
-    assert.equal(status.studioVersion,'0.4.2');
+    assert.equal(status.studioVersion,'0.4.3');
     assert.equal(status.root,root);
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aQb8AAAAASUVORK5CYII=','base64');
     const imported=await fetch(base+'/api/import?pack=Sample&filename=test-icon.png',{method:'POST',headers,body:png});
@@ -46,9 +46,11 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     const secondPair=await fetch(base+'/api/pair',{headers:{'X-Queue-Pair':'local-userscript'}});
     assert.equal(secondPair.status,403,'pairing token is one-use');
     const firstClientId=crypto.randomUUID();
-    const hello=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.4.2',clientId:firstClientId})}).then(r=>r.json());
+    const hello=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.4.3',heartbeat:true,clientId:firstClientId})}).then(r=>r.json());
     assert.ok(hello.session);
-    assert.equal((await fetch(base+'/api/status',{headers}).then(r=>r.json())).workerTabs[0].version,'0.4.2');
+    const connected=await fetch(base+'/api/status',{headers}).then(r=>r.json());
+    assert.equal(connected.workerTabs[0].version,'0.4.3');
+    assert.equal(connected.workerTabs[0].connected,true);
     const queued=await fetch(base+'/api/start',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({limit:0,folder:'Sample',workers:3})}).then(r=>r.json());
     assert.equal(queued.queued,1);
     const spawn=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',clientId:firstClientId})}).then(r=>r.json());
