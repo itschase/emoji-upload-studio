@@ -7,7 +7,8 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.5.2';
+const STUDIO_VERSION='0.5.3';
+const MAX_AUTOMATIC_RETRIES=3;
 
 let localConfig={};
 try { localConfig=JSON.parse(await fs.readFile(new URL('./config.local.json',import.meta.url),'utf8')); } catch { /* set root through environment instead */ }
@@ -38,7 +39,7 @@ let nextSpawnReconcileAt=0;
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
 function isConnected(worker){return Date.now()-worker.seenAt<30000;}
-function versionAtLeast(value,minimum='0.5.2'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
+function versionAtLeast(value,minimum='0.5.3'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
 function isReady(worker){return isConnected(worker)&&worker.supportsHeartbeat&&versionAtLeast(worker.scriptVersion);}
 function activeWorkers(){return [...workers.values()].filter(isConnected).length;}
 function readyWorkers(){return [...workers.values()].filter(isReady).length;}
@@ -202,10 +203,10 @@ const server=http.createServer(async(req,res)=>{
       const outcomes=result.outcomes.map(o=>({status:o.status==='submitted'?'submitted':o.status==='retry'?'retry':'uncertain',note:o.status==='submitted'?'':String(o.note||'').slice(0,300)}));
       await updateManifest(lease.items,outcomes);
       const automaticRetries=[];let doneDelta=0,failedDelta=0;
-      for(let i=0;i<outcomes.length;i++){const outcome=outcomes[i],item=lease.items[i],attempt=Number(item.attempt||0);if(outcome.status==='submitted'){doneDelta++;if(attempt>0)failedDelta--;}else{if(attempt===0)failedDelta++;if(outcome.status==='retry'&&attempt<1)automaticRetries.push({...item,attempt:attempt+1});}}
+      for(let i=0;i<outcomes.length;i++){const outcome=outcomes[i],item=lease.items[i],attempt=Number(item.attempt||0);if(outcome.status==='submitted'){doneDelta++;if(attempt>0)failedDelta--;}else{if(attempt===0)failedDelta++;if(outcome.status==='retry'&&attempt<MAX_AUTOMATIC_RETRIES)automaticRetries.push({...item,attempt:attempt+1});}}
       state.done+=doneDelta;state.failed=Math.max(0,state.failed+failedDelta);state.leases=state.leases.filter(x=>x!==lease);
-      if(automaticRetries.length){state.queued.push(...automaticRetries);await saveQueue();}
-      state.message=`${state.done} submitted; ${state.failed} unresolved${automaticRetries.length?`; ${automaticRetries.length} scheduled for one automatic retry`:''}`;
+      if(automaticRetries.length){state.queued.splice(state.cursor,0,...automaticRetries);await saveQueue();}
+      state.message=`${state.done} submitted; ${state.failed} unresolved${automaticRetries.length?`; ${automaticRetries.length} returned to the front of the queue for retry`:''}`;
       if(state.cursor>=state.queued.length&&!state.leases.length)state.running=false;await save();return json(res,200,{ok:true});
     });
     json(res,404,{error:'Not found'});
