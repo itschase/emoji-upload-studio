@@ -22,9 +22,8 @@
   const badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;z-index:2147483647;bottom:12px;left:12px;background:#111;color:#eee;border:1px solid #555;padding:7px 10px;border-radius:7px;font:12px system-ui;max-width:360px';
   const statusText=document.createElement('span');statusText.textContent='Local upload queue: checking';
-  const studioButton=document.createElement('button');studioButton.textContent='Open studio';studioButton.type='button';studioButton.style.cssText='margin-left:9px;background:#333;color:#eee;border:1px solid #666;border-radius:5px;padding:3px 6px;cursor:pointer';studioButton.title='Open the local upload studio in a new tab';
-  studioButton.addEventListener('click',()=>window.open(base,'_blank','noopener'));
-  badge.append(statusText,studioButton);document.body.append(badge);
+  const studioLink=document.createElement('a');studioLink.textContent='Open Upload Studio ↗';studioLink.href=base;studioLink.target='_blank';studioLink.rel='noopener noreferrer';studioLink.style.cssText='display:inline-block;margin-left:9px;background:#333;color:#eee;border:1px solid #666;border-radius:5px;padding:3px 6px;text-decoration:none;white-space:nowrap';studioLink.title='Open the local Upload Studio dashboard in a new tab';
+  badge.append(statusText,studioLink);document.body.append(badge);
   function say(message) { statusText.textContent = `Local upload queue: ${message}`; }
   function pair() { return new Promise((resolve,reject)=>GM_xmlhttpRequest({method:'GET',url:`${base}/api/pair`,responseType:'json',headers:{'X-Queue-Pair':'local-userscript'},timeout:10000,onload:r=>r.status===200&&r.response?.token?resolve(r.response.token):reject(new Error('Open the local studio to pair')),onerror:()=>reject(new Error('Local studio unavailable')),ontimeout:()=>reject(new Error('Pairing timed out'))})); }
   function request(route, data, responseType = 'json') {

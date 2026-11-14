@@ -2,7 +2,7 @@
 
 A local dashboard for preparing large emoji uploads. Import PNG and GIF images, edit each image's name, prioritized tags, category, license, and description, then start a queue of any size. A small Tampermonkey worker uses the signed-in [Emoji.gg submission page](https://emoji.gg/submit) to send groups of up to ten, respecting the site's form limit. The studio tracks results and resumes from its saved position.
 
-The dashboard is the working view. The Emoji.gg worker tab stays open in the background. You can reopen the dashboard from the worker's **Open studio** button.
+The dashboard is the working view. The Emoji.gg worker tab stays open in the background. On the Emoji.gg upload page, the worker shows a small status panel with an **Open Upload Studio ↗** link that opens the dashboard in a new tab.
 
 ## Why this exists
 
@@ -20,10 +20,10 @@ Emoji.gg's form accepts ten images per submission. Preparing hundreds or thousan
 1. Download or clone this repository.
 2. Copy `config.example.json` to `config.local.json` and set `root` to the folder where the studio should store image packs. You can instead set `EMOJI_QUEUE_ROOT` in your environment. The root is never uploaded as a whole; only queued image files are sent to Emoji.gg.
 3. Run `npm start` in this directory.
-4. Open **http://127.0.0.1:43861/**. The server listens only on your computer.
-5. Install `uploader.user.js` in Tampermonkey, then open **https://emoji.gg/submit**. The worker pairs automatically while the studio is open. Use **Pair worker** in the studio to reopen the 60-second pairing window if necessary.
+4. Open **http://127.0.0.1:43861/** in your browser. This is the dashboard, served only on your computer. Keep the server running while uploading.
+5. Install `uploader.user.js` in Tampermonkey, then open **https://emoji.gg/submit** while signed in. A **Local upload queue** panel appears in the lower left. Click **Open Upload Studio ↗** there whenever you want to open the dashboard in a new tab. The worker pairs automatically while the studio is open. Use **Pair worker** in the studio to reopen the 60-second pairing window if necessary.
 
-The userscript's **Open studio** button opens the dashboard in a new tab. The Tampermonkey script can update from this repository's raw `uploader.user.js` file; reload existing Emoji.gg tabs after an update.
+If the panel does not appear, confirm Tampermonkey is enabled and that you are on the Emoji.gg submission page. If the link opens an unavailable page, start the local server with `npm start`. The Tampermonkey script can update from this repository's raw `uploader.user.js` file; reload existing Emoji.gg tabs after an update.
 
 ## Preparing an upload
 
