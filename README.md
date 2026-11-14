@@ -20,8 +20,8 @@ Emoji.gg's form accepts ten images per submission. Preparing hundreds or thousan
 ## Installation
 
 1. Clone this repository with Git. Automatic Studio updates require a clean checkout of the official repository; a downloaded ZIP works but cannot update itself.
-2. Copy `config.example.json` to `config.local.json` and set `root` to the folder where the studio should store image packs. You can instead set `EMOJI_QUEUE_ROOT` in your environment. The root is never uploaded as a whole; only queued image files are sent to Emoji.gg.
-3. On Windows, double-click **Start Studio.cmd**. It starts the local server if needed and opens the dashboard in your browser. **Studio Control.cmd** provides Start, Stop, Restart, and Status choices. Alternatively use `npm start`, `npm stop`, `npm restart`, and `npm run status` in a terminal. Stop lets active batches finish before the server closes; restart waits for that shutdown and then opens the Studio again.
+2. On Windows, double-click **Start Studio.cmd**. On first launch it creates an `upload-packs` folder and local configuration automatically, starts the server, and opens the dashboard. To store packs elsewhere, copy `config.example.json` to `config.local.json` and change `root`, or set `EMOJI_QUEUE_ROOT` in your environment. The root is never uploaded as a whole; only queued image files are sent to Emoji.gg.
+3. **Studio Control.cmd** provides Start, Stop, Restart, and Status choices. Alternatively use `npm start`, `npm stop`, `npm restart`, and `npm run status` in a terminal. Stop lets active batches finish before the server closes; restart waits for that shutdown and then opens the Studio again.
 4. The default dashboard address is **http://127.0.0.1:43861/**. The dashboard header shows its actual port and configured image folder, so you can tell which local instance you opened. Keep the server running while uploading.
 5. [Install the Upload Studio Worker from Greasy Fork](https://greasyfork.org/en/scripts/605370-emoji-gg-upload-studio-worker) in Tampermonkey, then open **https://emoji.gg/submit** while signed in. A **Local upload queue** panel appears in the lower left. Click **Open Upload Studio ↗** there whenever you want to open the dashboard in a new tab. The worker pairs automatically while the studio is open. Use **Pair worker** in the studio to reopen the 60-second pairing window if necessary.
 
@@ -31,13 +31,34 @@ The local Studio checks the official GitHub repository when you start it and eve
 
 If an older Studio server is already using the same port, the launcher reports it instead of opening a misleading dashboard. Finish or safely pause that queue before switching server versions; updating only the userscript does not update the server.
 
+## Five-minute quick start
+
+1. Start the Studio and install the Tampermonkey worker as described above.
+2. In **Import a prepared pack**, enter a new pack name and select PNG/GIF images. Optionally select a completed CSV based on **Download CSV template**.
+3. Review the generated metadata cards and save any changes.
+4. Open one signed-in Emoji.gg submit tab, choose a **Parallel tabs** target, and select **Apply tab count**. The first worker opens the remaining reserved tabs.
+5. Choose a pack folder and image count, then select **Submit queued images**. Keep the server and worker tabs open while the queue runs.
+
 ## Preparing an upload
 
-Choose a pack name and select as many PNG/GIF images as you want under **Import to local draft**. Import saves them to a pack folder under your configured root and creates `upload_manifest.csv` with draft names and descriptions derived from filenames. Nothing is submitted during import.
+Choose a pack name and select as many PNG/GIF images as you want under **Import a prepared pack**. Import saves them to a pack folder under your configured root and creates `upload_manifest.csv` with draft names and descriptions derived from filenames. Nothing is submitted during import.
+
+For a metadata-ready import, download [`upload_manifest.template.csv`](upload_manifest.template.csv), add one row per image, then select the CSV and all matching images together. The CSV import is transactional: the Studio validates and stages every file before the finished pack folder appears. A failed import cannot add renamed duplicates or a half-written manifest to an existing pack.
+
+| CSV field | What to enter |
+| --- | --- |
+| `filename` | Exact PNG/GIF filename, including extension |
+| `title` | Short Emoji.gg name |
+| `tags` | Prioritized tags separated by semicolons |
+| `description` | Clear SEO-friendly description, up to 2,500 characters |
+| `category_value` | Emoji.gg category number `1` through `23` |
+| `license` | `CC BY 4.0`, `Basic`, `WTFPL`, or `Streamer` |
+
+Category values are: `1` Original Style, `2` TV / Movie, `3` Meme, `4` Anime, `5` Celebrity, `6` Blobs, `7` Thinking, `8` Animated, `9` NSFW, `10` Gaming, `11` Letters, `12` Other, `13` Pepe, `14` Logos, `15` Cute, `16` Utility, `17` Animals, `18` Recolors, `19` Flags, `20` Hearts, `21` Pixel Art, `22` Reactions, and `23` Aesthetic.
 
 Review the image previews and edit the metadata cards. Tags are prioritized with semicolons, such as `cat; cute; reaction; emoji`. The worker tries each tag against Emoji.gg's allowed list and requires at least three accepted tag chips before submitting an image. Save changes to write them to the pack's CSV. Existing pack folders with compatible `upload_manifest.csv` files also appear automatically.
 
-Enter the number of pending images to queue, or enter `0` for all pending images. Optionally enter one exact pack-folder name. Choose **1–10 parallel tabs**. **Apply tab count** opens missing worker tabs even while the queue is paused; if none is connected, it opens the first tab and that worker opens the rest. **Submit queued images** starts the queue. Each tab receives separate batches of at most ten images. **Pause after batch** and **Resume** control the run. The dashboard distinguishes ready workers from outdated ones, and only workers with upload heartbeats can start or resume a queue. Keep the Emoji.gg worker tabs and local server open while it works. Start with one tab if Emoji.gg limits concurrent submissions on your account.
+Enter the number of pending images to queue, or enter `0` for all pending images. Optionally enter one exact pack-folder name. Choose **1–10 parallel tabs**. **Apply tab count** reserves unique worker identities and opens only the missing tabs, even while the queue is paused. Slow tabs retain their reservation for one minute, preventing repeated reconciliation from opening duplicate workers. **Submit queued images** starts the queue. Each healthy tab receives its own non-overlapping batch of at most ten images. **Pause after batch** and **Resume** control the run. Keep the Emoji.gg worker tabs and local server open while it works. Start with one tab if Emoji.gg limits concurrent submissions on your account.
 
 ## Progress and recovery
 
@@ -54,5 +75,7 @@ Use this only for images you are permitted to submit. The tool is independent of
 ## Development
 
 Run `npm test` for the local import, catalog, edit, and worker-gate test. The server uses only built-in Node.js modules; no package installation is needed. Personal configuration and local process logs are excluded by `.gitignore`.
+
+The dashboard uses the official [Bootswatch Cyborg](https://bootswatch.com/cyborg/) Bootstrap theme, kept locally so the Studio does not depend on a CDN while running.
 
 License: [MIT](LICENSE).

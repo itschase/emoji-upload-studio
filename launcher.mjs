@@ -7,8 +7,8 @@ import {checkUpdate,applyUpdate} from './update.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 let config={};try{config=JSON.parse(await fs.readFile(path.join(here,'config.local.json'),'utf8'));}catch{}
-const root=process.env.EMOJI_QUEUE_ROOT||config.root;
-if(!root)throw new Error('Set EMOJI_QUEUE_ROOT or config.local.json before launching');
+let root=process.env.EMOJI_QUEUE_ROOT||config.root;
+if(!root){root=path.join(here,'upload-packs');await fs.mkdir(root,{recursive:true});await fs.writeFile(path.join(here,'config.local.json'),JSON.stringify({root},null,2)+'\n');console.log(`First run: created local pack folder at ${root}`);}
 const data=path.join(path.resolve(root),'.upload-queue');
 const port=Number(process.env.EMOJI_QUEUE_PORT||43861);
 const base=`http://127.0.0.1:${port}`;

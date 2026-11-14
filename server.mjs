@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.4.5';
+const STUDIO_VERSION='0.5.0';
 
 let localConfig={};
 try { localConfig=JSON.parse(await fs.readFile(new URL('./config.local.json',import.meta.url),'utf8')); } catch { /* set root through environment instead */ }
@@ -18,13 +18,18 @@ const DATA = path.join(ROOT, '.upload-queue');
 const TOKEN_FILE = path.join(DATA, 'token.txt');
 const STATE_FILE = path.join(DATA, 'state.json');
 const QUEUE_FILE = path.join(DATA, 'queue.json');
+const IMPORT_DATA = path.join(DATA,'imports');
 const columns = ['filename','title','primary_emoji','secondary_emoji','category','category_value','license','tags','description','source','batch_number','batch_position','upload_status','upload_notes'];
 await fs.mkdir(DATA, { recursive: true });
+if(!IMPORT_DATA.startsWith(DATA+path.sep))throw new Error('Invalid import staging path');
+await fs.rm(IMPORT_DATA,{recursive:true,force:true});
 let token;
 try { token = (await fs.readFile(TOKEN_FILE, 'utf8')).trim(); }
 catch { token = crypto.randomBytes(24).toString('hex'); await fs.writeFile(TOKEN_FILE, token, { mode: 0o600 }); }
 let state = { running: false, paused: true, limit: 0, queued: [], cursor: 0, leases: [], workers: 1, spawnPending: 0, done: 0, failed: 0, skipped: 0, message: '' };
 const workers=new Map();
+const expectedWorkers=new Map();
+const importSessions=new Map();
 let pairingUntil=0;
 let shuttingDown=false;
 let checkingUpdate=false;
@@ -32,15 +37,21 @@ let updateMessage='';
 let nextSpawnReconcileAt=0;
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
-function isConnected(worker){return Date.now()-worker.seenAt<15000;}
+function isConnected(worker){return Date.now()-worker.seenAt<30000;}
+function versionAtLeast(value,minimum='0.5.0'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
+function isReady(worker){return isConnected(worker)&&worker.supportsHeartbeat&&versionAtLeast(worker.scriptVersion);}
 function activeWorkers(){return [...workers.values()].filter(isConnected).length;}
-function readyWorkers(){return [...workers.values()].filter(w=>isConnected(w)&&w.supportsHeartbeat).length;}
-function workerSummaries(){return [...workers.entries()].filter(([id,w])=>isConnected(w)||state.leases.some(lease=>lease.owner===id)).map(([id,w])=>({id:id.slice(0,8),version:w.scriptVersion||'older',connected:isConnected(w),ready:!!w.supportsHeartbeat,inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0}));}
+function readyWorkers(){return [...workers.values()].filter(isReady).length;}
+function workerSummaries(){return [...workers.entries()].filter(([id,w])=>isConnected(w)||state.leases.some(lease=>lease.owner===id)).map(([id,w])=>({id:id.slice(0,8),version:w.scriptVersion||'older',connected:isConnected(w),ready:isReady(w),inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0}));}
+function liveLeaseCount(){return state.leases.filter(lease=>isConnected(workers.get(lease.owner)||{seenAt:0})).length;}
+function expireWorkerReservations(){const now=Date.now();for(const [id,reservation] of expectedWorkers)if(reservation.expiresAt<=now)expectedWorkers.delete(id);state.spawnPending=expectedWorkers.size;}
+function reserveMissingWorkers(){expireWorkerReservations();const deficit=Math.max(0,state.workers-readyWorkers()-expectedWorkers.size);for(let i=0;i<deficit;i++)expectedWorkers.set(crypto.randomUUID(),{expiresAt:Date.now()+60000,dispatched:false});state.spawnPending=expectedWorkers.size;return deficit;}
+function dispatchWorkerReservations(){reserveMissingWorkers();const ids=[];for(const [id,reservation] of expectedWorkers)if(!reservation.dispatched){reservation.dispatched=true;ids.push(id);}return ids;}
 try { state = { ...state, ...JSON.parse(await fs.readFile(STATE_FILE, 'utf8')) }; }
 catch { /* first run */ }
 try { state.queued = JSON.parse(await fs.readFile(QUEUE_FILE,'utf8')); }
 catch { state.queued=[]; }
-state.leases ||= [];
+state.leases ||= [];state.spawnPending=0;
 // Recovery occurs after the manifest writer is defined below.
 
 function parseCsv(text) {
@@ -114,16 +125,21 @@ async function editRow(input){
   const temp=file+'.queue-tmp';await fs.writeFile(temp,csv(rows));await fs.rename(temp,file);return row;
 }
 function json(res,status,body){const data=JSON.stringify(body);res.writeHead(status,{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data),'Cache-Control':'no-store'});res.end(data);}
-async function body(req){let s='';for await(const part of req){s+=part;if(s.length>1000000)throw new Error('Request too large');}return s?JSON.parse(s):{};}
+async function body(req){let s='';for await(const part of req){s+=part;if(s.length>5*1024*1024)throw new Error('Request too large');}return s?JSON.parse(s):{};}
 async function binary(req){const parts=[];let size=0;for await(const part of req){size+=part.length;if(size>256*1024)throw new Error('Image exceeds 256 KiB');parts.push(part);}return Buffer.concat(parts);}
+function validImageBytes(bytes){return bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))||bytes.subarray(0,6).toString('ascii').startsWith('GIF8');}
+function validWindowsLeaf(value){return safeLeaf(value)&&value===value.trim()&&!/[<>:"/\\|?*\x00-\x1f]/.test(value)&&!/[. ]$/.test(value)&&! /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(value);}
+function validatePackName(value){const pack=String(value||'').trim();if(!pack||pack.startsWith('.')||!validWindowsLeaf(pack))throw new Error('Pack name contains invalid Windows filename characters');return pack;}
+function normalizeImportRows(input){if(!Array.isArray(input)||!input.length||input.length>500)throw new Error('CSV must contain 1–500 image rows');const seen=new Set(),allowedLicenses=new Set(['CC BY 4.0','Basic','WTFPL','Streamer']);return input.map((value,index)=>{const filename=String(value.filename||'').trim(),title=String(value.title||'').trim(),tags=String(value.tags||'').trim(),description=String(value.description||'').trim(),category_value=String(value.category_value||'').trim(),license=String(value.license||'').trim();if(!validWindowsLeaf(filename)||!/\.(?:png|gif)$/i.test(filename))throw new Error(`Row ${index+2}: invalid PNG/GIF filename`);if(seen.has(filename.toLowerCase()))throw new Error(`Row ${index+2}: duplicate filename ${filename}`);seen.add(filename.toLowerCase());if(!title||title.length>100)throw new Error(`Row ${index+2}: title is required and must be 100 characters or less`);if(!tags||tags.length>500)throw new Error(`Row ${index+2}: prioritized tags are required`);if(!description||description.length>2500)throw new Error(`Row ${index+2}: description is required and must be 2500 characters or less`);if(!/^(?:[1-9]|1\d|2[0-3])$/.test(category_value))throw new Error(`Row ${index+2}: category_value must be 1–23`);if(!allowedLicenses.has(license))throw new Error(`Row ${index+2}: unsupported license`);return {filename,title,tags,description,category_value,license};});}
+async function beginManifestImport(input){const pack=validatePackName(input.pack),rows=normalizeImportRows(input.rows),files=Array.isArray(input.files)?input.files:[];if(files.length!==rows.length)throw new Error('Selected image count does not match the CSV');const names=new Map(files.map(file=>[String(file.name||''),file]));if(names.size!==files.length)throw new Error('Selected images contain duplicate filenames');for(const row of rows){const file=names.get(row.filename);if(!file)throw new Error(`No selected image exactly matches ${row.filename}`);if(!Number.isInteger(file.size)||file.size<1||file.size>256*1024)throw new Error(`${row.filename} must be 1–256 KiB`);}try{await fs.access(path.join(ROOT,pack));throw new Error('That pack folder already exists; choose a new pack name');}catch(error){if(error.code!=='ENOENT')throw error;}const id=crypto.randomUUID(),stage=path.join(IMPORT_DATA,id);await fs.mkdir(stage,{recursive:true});importSessions.set(id,{pack,rows,files:names,uploaded:new Set(),stage,expiresAt:Date.now()+30*60*1000});return {id,count:rows.length};}
+async function stageManifestFile(req,u){const id=String(u.searchParams.get('id')||''),filename=String(u.searchParams.get('filename')||''),session=importSessions.get(id);if(!session||session.expiresAt<Date.now())throw new Error('Import session expired; start the import again');const expected=session.files.get(filename);if(!expected||!safeLeaf(filename))throw new Error('File is not listed in this import');if(session.uploaded.has(filename))throw new Error('File was already received');const bytes=await binary(req);if(bytes.length!==expected.size)throw new Error('File size changed during import');if(!validImageBytes(bytes))throw new Error('File content is not PNG or GIF');await fs.writeFile(path.join(session.stage,filename),bytes,{flag:'wx'});session.uploaded.add(filename);return {received:session.uploaded.size,total:session.rows.length};}
+async function commitManifestImport(id){const session=importSessions.get(String(id||''));if(!session||session.expiresAt<Date.now())throw new Error('Import session expired; start the import again');if(session.uploaded.size!==session.rows.length)throw new Error(`Import is incomplete: ${session.uploaded.size}/${session.rows.length} images received`);const rows=session.rows.map(row=>({...row,primary_emoji:'',secondary_emoji:'',category:'',source:'',batch_number:'',batch_position:'',upload_status:'pending',upload_notes:''}));await fs.writeFile(path.join(session.stage,'upload_manifest.csv'),csv(rows));const target=path.join(ROOT,session.pack);try{await fs.access(target);throw new Error('That pack folder was created during import; choose a new pack name');}catch(error){if(error.code!=='ENOENT')throw error;}await fs.rename(session.stage,target);importSessions.delete(String(id));return {folder:session.pack,count:rows.length};}
 async function importImage(req,u){
-  const pack=String(u.searchParams.get('pack')||'').replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').trim();
+  const pack=validatePackName(u.searchParams.get('pack'));
   const original=String(u.searchParams.get('filename')||'').replace(/[<>:"/\\|?*\x00-\x1f]/g,'_');
   if(!safeLeaf(pack)||pack.startsWith('.')||!safeLeaf(original)||!/\.(png|gif)$/i.test(original))throw new Error('Choose a pack name and PNG/GIF files');
   const bytes=await binary(req);if(!bytes.length)throw new Error('Empty file');
-  const png=bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
-  const gif=bytes.subarray(0,6).toString('ascii').startsWith('GIF8');
-  if(!png&&!gif)throw new Error('File content is not PNG or GIF');
+  if(!validImageBytes(bytes))throw new Error('File content is not PNG or GIF');
   const folder=path.join(ROOT,pack);await fs.mkdir(folder,{recursive:true});
   const ext=path.extname(original),base=path.basename(original,ext);let filename=original,n=2;
   while(true){try{await fs.access(path.join(folder,filename));filename=`${base}-${n++}${ext}`;}catch{break;}}
@@ -139,15 +155,20 @@ const server=http.createServer(async(req,res)=>{
     const u=new URL(req.url,'http://localhost');
     if(req.method==='OPTIONS'){res.writeHead(204);return res.end();}
     if(u.pathname==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','X-Frame-Options':'DENY','Content-Security-Policy':"frame-ancestors 'none'"});return res.end((await fs.readFile(new URL('./dashboard.html',import.meta.url),'utf8')).replace('__QUEUE_TOKEN__',token));}
+    if(u.pathname==='/vendor/bootswatch-cyborg.min.css'){res.writeHead(200,{'Content-Type':'text/css; charset=utf-8','Cache-Control':'public, max-age=86400'});return res.end(await fs.readFile(new URL('./vendor/bootswatch-cyborg.min.css',import.meta.url),'utf8'));}
     if(u.pathname==='/studio.css'){res.writeHead(200,{'Content-Type':'text/css; charset=utf-8','Cache-Control':'no-cache'});return res.end(await fs.readFile(new URL('./studio.css',import.meta.url),'utf8'));}
+    if(u.pathname==='/upload_manifest.template.csv'){res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="upload_manifest.template.csv"','Cache-Control':'no-cache'});return res.end(await fs.readFile(new URL('./upload_manifest.template.csv',import.meta.url),'utf8'));}
     if(u.pathname==='/uploader.user.js'){const script=await fs.readFile(new URL('./uploader.user.js',import.meta.url),'utf8');res.writeHead(200,{'Content-Type':'text/javascript; charset=utf-8'});return res.end(script);}
     if(u.pathname==='/api/pair'&&req.headers['x-queue-pair']==='local-userscript'&&Date.now()<pairingUntil){pairingUntil=0;res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});return res.end(JSON.stringify({token}));}
     const auth=req.headers['x-queue-token']===token || u.searchParams.get('token')===token;
     if(!auth)return json(res,403,{error:'Invalid queue token'});
-    if(u.pathname==='/api/status')return json(res,200,{...state,protocolVersion:'0.4.0',studioVersion:STUDIO_VERSION,updateMessage,root:ROOT,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:readyWorkers()>0,activeWorkers:activeWorkers(),readyWorkers:readyWorkers(),workerTabs:workerSummaries()});
+    if(u.pathname==='/api/status'){expireWorkerReservations();return json(res,200,{...state,protocolVersion:'0.4.0',studioVersion:STUDIO_VERSION,updateMessage,root:ROOT,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:readyWorkers()>0,activeWorkers:activeWorkers(),readyWorkers:readyWorkers(),expectedWorkers:expectedWorkers.size,workerTabs:workerSummaries()});}
     if(u.pathname==='/api/enable-pairing'&&req.method==='POST'){pairingUntil=Date.now()+60000;return json(res,200,{ok:true,expiresInSeconds:60});}
-    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=String(hello.scriptVersion||'older').slice(0,24);worker.supportsHeartbeat=hello.heartbeat===true;if(worker.supportsHeartbeat&&state.spawnPending===0&&Date.now()>=nextSpawnReconcileAt){state.spawnPending=Math.max(0,state.workers-readyWorkers());nextSpawnReconcileAt=Date.now()+20000;}const spawn=worker.supportsHeartbeat?state.spawnPending:0;if(spawn)state.spawnPending=0;return json(res,200,{ok:true,session:worker.session,spawn});});
+    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');expectedWorkers.delete(hello.clientId);let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=String(hello.scriptVersion||'older').slice(0,24);worker.supportsHeartbeat=hello.heartbeat===true;while(readyWorkers()+expectedWorkers.size>state.workers)expectedWorkers.delete(expectedWorkers.keys().next().value);let spawnIds=[];if(isReady(worker)&&Date.now()>=nextSpawnReconcileAt){spawnIds=dispatchWorkerReservations();nextSpawnReconcileAt=Date.now()+5000;}state.spawnPending=expectedWorkers.size;return json(res,200,{ok:true,session:worker.session,spawnIds});});
     if(u.pathname==='/api/catalog')return json(res,200,await catalog(Math.max(0,Number(u.searchParams.get('offset')||0)),Math.min(100,Math.max(1,Number(u.searchParams.get('limit')||40))),u.searchParams.get('folder')||'',u.searchParams.get('status')||'pending'));
+    if(u.pathname==='/api/import-session'&&req.method==='POST')return json(res,200,await serial(async()=>beginManifestImport(await body(req))));
+    if(u.pathname==='/api/import-session/file'&&req.method==='POST')return json(res,200,await serial(()=>stageManifestFile(req,u)));
+    if(u.pathname==='/api/import-session/commit'&&req.method==='POST')return json(res,200,await serial(async()=>commitManifestImport((await body(req)).id)));
     if(u.pathname==='/api/import'&&req.method==='POST')return json(res,200,await serial(()=>importImage(req,u)));
     if(u.pathname==='/api/edit'&&req.method==='POST')return json(res,200,{item:await serial(async()=>editRow(await body(req)))});
     if(u.pathname==='/api/preview'){
@@ -156,7 +177,7 @@ const server=http.createServer(async(req,res)=>{
       res.writeHead(200,{'Content-Type':/\.gif$/i.test(file)?'image/gif':'image/png','Content-Length':stat.size,'Cache-Control':'no-store'});return createReadStream(file).pipe(res);
     }
     if(u.pathname==='/api/start'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');const input=await body(req),job=await createQueue(Number(input.limit),String(input.folder||''),Number(input.workers||1));return json(res,200,{queued:job.queued.length,skipped:job.skipped});});
-    if(u.pathname==='/api/workers'&&req.method==='POST')return await serial(async()=>{const input=await body(req),count=Number(input.workers);if(!Number.isInteger(count)||count<1||count>10)throw new Error('Choose 1–10 worker tabs');state.workers=count;state.spawnPending=Math.max(0,count-readyWorkers());nextSpawnReconcileAt=Date.now()+20000;await save();return json(res,200,{workers:count,spawnPending:state.spawnPending,openFirst:readyWorkers()===0});});
+    if(u.pathname==='/api/workers'&&req.method==='POST')return await serial(async()=>{const input=await body(req),count=Number(input.workers);if(!Number.isInteger(count)||count<1||count>10)throw new Error('Choose 1–10 worker tabs');state.workers=count;expireWorkerReservations();const openFirst=readyWorkers()===0,targetReservations=Math.max(0,count-readyWorkers()-(openFirst?1:0));while(expectedWorkers.size>targetReservations)expectedWorkers.delete(expectedWorkers.keys().next().value);while(expectedWorkers.size<targetReservations)expectedWorkers.set(crypto.randomUUID(),{expiresAt:Date.now()+60000,dispatched:false});state.spawnPending=expectedWorkers.size;nextSpawnReconcileAt=0;await save();return json(res,200,{workers:count,spawnPending:expectedWorkers.size,openFirst});});
     if(u.pathname==='/api/pause'&&req.method==='POST')return await serial(async()=>{state.paused=true;await save();return json(res,200,{ok:true});});
     if(u.pathname==='/api/resume'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');if(!readyWorkers())throw new Error('Worker 0.4.3 or newer is required before resuming');state.paused=false;state.running=state.cursor<state.queued.length||state.leases.length>0;await save();return json(res,200,{ok:true});});
     if(u.pathname==='/api/shutdown'&&req.method==='POST')return await serial(async()=>{shuttingDown=true;state.paused=true;await save();json(res,200,{ok:true,draining:state.leases.length});const timer=setInterval(()=>{if(!state.leases.length){clearInterval(timer);server.close();}},500);});
@@ -164,7 +185,7 @@ const server=http.createServer(async(req,res)=>{
       const owner=workerOwner(req);if(!owner||!workers.get(owner)?.supportsHeartbeat)return json(res,403,{error:'Worker 0.4.3 or newer required'});
       if(!state.running||state.paused)return json(res,200,{batch:null});
       if(state.leases.some(x=>x.owner===owner))return json(res,200,{batch:null,blocked:'This tab has an unresolved batch'});
-      if(state.leases.length>=state.workers||state.cursor>=state.queued.length)return json(res,200,{batch:null});
+      if(liveLeaseCount()>=state.workers||state.cursor>=state.queued.length)return json(res,200,{batch:null});
       const lease={id:crypto.randomUUID(),owner,issuedAt:Date.now(),items:state.queued.slice(state.cursor,state.cursor+10)};state.cursor+=lease.items.length;state.leases.push(lease);await save();return json(res,200,{batch:lease});
     });
     if(u.pathname==='/api/file'){
@@ -214,7 +235,7 @@ async function recoverDisconnectedBatches(){
     state.leases=state.leases.filter(lease=>!stale.includes(lease));
     state.failed+=stale.reduce((sum,lease)=>sum+lease.items.length,0);
     state.message=`${state.failed} unresolved; ${stale.length} disconnected batches need review`;
-    state.spawnPending=Math.max(state.spawnPending,Math.max(0,state.workers-readyWorkers()));
+    reserveMissingWorkers();
     nextSpawnReconcileAt=0;
     if(state.cursor>=state.queued.length&&!state.leases.length)state.running=false;
     await save();
@@ -222,3 +243,7 @@ async function recoverDisconnectedBatches(){
 }
 const recoveryTimer=setInterval(recoverDisconnectedBatches,30000);
 recoveryTimer.unref();
+const workerPruneTimer=setInterval(()=>{for(const [id,worker] of workers){if(Date.now()-worker.seenAt>10*60*1000&&!state.leases.some(lease=>lease.owner===id))workers.delete(id);}},60000);
+workerPruneTimer.unref();
+const importCleanupTimer=setInterval(async()=>{for(const [id,session] of importSessions)if(session.expiresAt<Date.now()){importSessions.delete(id);await fs.rm(session.stage,{recursive:true,force:true}).catch(()=>{});}},60000);
+importCleanupTimer.unref();

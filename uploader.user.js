@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.4.5
+// @version      0.5.0
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -20,8 +20,8 @@
   if(!['/submit','/submit/sticker'].includes(location.pathname))return;
   const base = 'http://127.0.0.1:43861';
   let token = GM_getValue('queueToken','');
-  const clientId=new URLSearchParams(location.search).get('upload_studio_worker')||sessionStorage.getItem('uploadStudioClientId')||crypto.randomUUID();
-  sessionStorage.setItem('uploadStudioClientId',clientId);
+  const clientId=new URLSearchParams(location.search).get('upload_studio_worker')||crypto.randomUUID();
+  const workerUrl=pathname=>`${pathname}?upload_studio_worker=${encodeURIComponent(clientId)}`;
   let workerSession='';
   const badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;z-index:2147483647;bottom:12px;left:12px;background:#111;color:#eee;border:1px solid #555;padding:7px 10px;border-radius:7px;font:12px system-ui;max-width:360px';
@@ -98,9 +98,9 @@
   async function announce(){
     if(helloPromise)return helloPromise;
     helloPromise=(async()=>{
-      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.4.5',heartbeat:true,clientId});
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.5.0',heartbeat:true,clientId});
       workerSession=hello.session;
-      for(let i=0;i<hello.spawn;i++)GM_openInTab(`https://emoji.gg/submit?upload_studio_worker=${crypto.randomUUID()}`,{active:false,insert:true});
+      for(const id of hello.spawnIds||[])GM_openInTab(`https://emoji.gg/submit?upload_studio_worker=${encodeURIComponent(id)}`,{active:false,insert:true});
       return hello;
     })();
     try{return await helloPromise}finally{helloPromise=null}
@@ -111,17 +111,17 @@
       if(!token){token=await pair();GM_setValue('queueToken',token);say('paired with local studio');}
       await announce();
       const status=await request('status');showQueue(status);if(!status.running||status.paused){say(status.paused?'paused':'idle');return;}
-      if(location.pathname==='/submit/sticker'){location.href='/submit';return;}
+      if(location.pathname==='/submit/sticker'){location.href=workerUrl('/submit');return;}
       if(location.pathname!=='/submit')return;
       const {batch}=await request('next');if(!batch)return;
       say(`uploading ${batch.items.length}; ${status.queued} queued`);
-      try{const outcomes=await upload(batch);await request('result',{id:batch.id,outcomes});say(`${outcomes.filter(x=>x.status==='submitted').length}/${outcomes.length} submitted`);location.href='/submit/sticker';}
+      try{const outcomes=await upload(batch);await request('result',{id:batch.id,outcomes});say(`${outcomes.filter(x=>x.status==='submitted').length}/${outcomes.length} submitted`);location.href=workerUrl('/submit/sticker');}
       catch(error){
         const status=batch.submittedToSite?'uncertain':'retry';
         say(`batch ${status}: ${error.message}`);
         await request('result',{id:batch.id,outcomes:batch.items.map(()=>({status,note:error.message}))});
         console.error('[Emoji queue]',error);
-        location.href='/submit/sticker';
+        location.href=workerUrl('/submit/sticker');
       }
     }catch(error){const old=legacyWorker();if(old){old.append(studioLink);legacyMode=true;badge.remove();setInterval(()=>{const current=legacyWorker();if(current)current.append(studioLink);},1000);return;}if(/Invalid queue token/.test(error.message)){token='';GM_setValue('queueToken','');workerSession='';}queueText.textContent='';queueButton.style.display='none';say(error.message);}finally{busy=false;}
   }
