@@ -60,6 +60,8 @@ Review the image previews and edit the metadata cards. Tags are prioritized with
 
 Enter the number of pending images to queue, or enter `0` for all pending images. Optionally enter one exact pack-folder name. Choose **1–10 parallel tabs**. **Apply tab count** reserves unique worker identities and opens only the missing tabs, even while the queue is paused. Slow tabs retain their reservation for one minute, preventing repeated reconciliation from opening duplicate workers. **Submit queued images** starts the queue. Each healthy tab receives its own non-overlapping batch of at most ten images. **Pause after batch** and **Resume** control the run. Keep the Emoji.gg worker tabs and local server open while it works. Start with one tab if Emoji.gg limits concurrent submissions on your account.
 
+Already-open worker tabs are reused before new tabs are created. Outdated workers are shown separately and perform a one-time reload after the userscript update is installed. If two installed copies try to operate the same worker identity, only one is elected; the duplicate stays inactive.
+
 ## Progress and recovery
 
 - Each image preview on Emoji.gg is hashed and matched to the source file before metadata is entered, so reordered files receive the correct fields.
@@ -67,6 +69,7 @@ Enter the number of pending images to queue, or enter `0` for all pending images
 - Queue position is saved in `.upload-queue` under the configured root. If the server stops during a submission, that in-flight batch is marked `uncertain` for review rather than duplicated automatically.
 - The server records which tab owns each batch. A tab cannot read or report another tab's lease, and two tabs cannot receive the same images. Restarting the server with an in-flight batch marks that batch `uncertain` for review.
 - The dashboard's connected-tab count uses live worker check-ins. A worker keeps checking in while it submits a batch. If its tab disappears for more than two minutes, that batch becomes `uncertain` for review; it is never silently retried.
+- Result acknowledgements are idempotent and retried. If a tab loses an acknowledgement entirely, its orphaned lease is released as `uncertain` so that tab can continue processing instead of remaining stalled.
 - A pack folder receives the `.uploaded-` prefix only after every manifest row is `submitted`.
 - For an unattended run, `node auto-finish.mjs` watches the queue, performs one bounded pass over explicit `retry` rows, and writes `.upload-queue/auto-finish-report.json`. It leaves `uncertain` rows for review.
 

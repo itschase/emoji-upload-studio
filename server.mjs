@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.5.4';
+const STUDIO_VERSION='0.5.5';
 const MAX_AUTOMATIC_RETRIES=3;
 
 let localConfig={};
@@ -30,6 +30,7 @@ catch { token = crypto.randomBytes(24).toString('hex'); await fs.writeFile(TOKEN
 let state = { running: false, paused: true, limit: 0, queued: [], cursor: 0, leases: [], workers: 1, spawnPending: 0, done: 0, failed: 0, skipped: 0, message: '' };
 const workers=new Map();
 const expectedWorkers=new Map();
+const completedLeases=new Map();
 const importSessions=new Map();
 let pairingUntil=0;
 let shuttingDown=false;
@@ -39,14 +40,14 @@ let nextSpawnReconcileAt=0;
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
 function isConnected(worker){return Date.now()-worker.seenAt<30000;}
-function versionAtLeast(value,minimum='0.5.4'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
+function versionAtLeast(value,minimum='0.5.5'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
 function isReady(worker){return isConnected(worker)&&worker.supportsHeartbeat&&versionAtLeast(worker.scriptVersion);}
 function activeWorkers(){return [...workers.values()].filter(isConnected).length;}
 function readyWorkers(){return [...workers.values()].filter(isReady).length;}
-function workerSummaries(){return [...workers.entries()].filter(([id,w])=>isConnected(w)||state.leases.some(lease=>lease.owner===id)).map(([id,w])=>({id:id.slice(0,8),version:w.scriptVersion||'older',connected:isConnected(w),ready:isReady(w),inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0,stage:w.stage||'idle',progressAt:w.progressAt||w.seenAt}));}
+function workerSummaries(){return [...workers.entries()].filter(([id,w])=>isConnected(w)||state.leases.some(lease=>lease.owner===id)).map(([id,w])=>({id:id.slice(0,8),installationId:String(w.installationId||'legacy').slice(0,8),version:w.scriptVersion||'older',connected:isConnected(w),ready:isReady(w),inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0,stage:w.stage||'idle',progressAt:w.progressAt||w.seenAt}));}
 function liveLeaseCount(){return state.leases.filter(lease=>isConnected(workers.get(lease.owner)||{seenAt:0})).length;}
 function expireWorkerReservations(){const now=Date.now();for(const [id,reservation] of expectedWorkers)if(reservation.expiresAt<=now)expectedWorkers.delete(id);state.spawnPending=expectedWorkers.size;}
-function reserveMissingWorkers(){expireWorkerReservations();const deficit=Math.max(0,state.workers-readyWorkers()-expectedWorkers.size);for(let i=0;i<deficit;i++)expectedWorkers.set(crypto.randomUUID(),{expiresAt:Date.now()+60000,dispatched:false});state.spawnPending=expectedWorkers.size;return deficit;}
+function reserveMissingWorkers(){expireWorkerReservations();const deficit=Math.max(0,state.workers-activeWorkers()-expectedWorkers.size);for(let i=0;i<deficit;i++)expectedWorkers.set(crypto.randomUUID(),{expiresAt:Date.now()+60000,dispatched:false});state.spawnPending=expectedWorkers.size;return deficit;}
 function dispatchWorkerReservations(){reserveMissingWorkers();const ids=[];for(const [id,reservation] of expectedWorkers)if(!reservation.dispatched){reservation.dispatched=true;ids.push(id);}return ids;}
 try { state = { ...state, ...JSON.parse(await fs.readFile(STATE_FILE, 'utf8')) }; }
 catch { /* first run */ }
@@ -165,7 +166,7 @@ const server=http.createServer(async(req,res)=>{
     if(!auth)return json(res,403,{error:'Invalid queue token'});
     if(u.pathname==='/api/status'){expireWorkerReservations();return json(res,200,{...state,protocolVersion:'0.4.0',studioVersion:STUDIO_VERSION,updateMessage,root:ROOT,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:readyWorkers()>0,activeWorkers:activeWorkers(),readyWorkers:readyWorkers(),expectedWorkers:expectedWorkers.size,workerTabs:workerSummaries()});}
     if(u.pathname==='/api/enable-pairing'&&req.method==='POST'){pairingUntil=Date.now()+60000;return json(res,200,{ok:true,expiresInSeconds:60});}
-    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');expectedWorkers.delete(hello.clientId);let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=String(hello.scriptVersion||'older').slice(0,24);worker.supportsHeartbeat=hello.heartbeat===true;worker.stage=String(hello.stage||'idle').slice(0,80);worker.progressAt=Number(hello.progressAt)||worker.seenAt;while(readyWorkers()+expectedWorkers.size>state.workers)expectedWorkers.delete(expectedWorkers.keys().next().value);let spawnIds=[];if(isReady(worker)&&Date.now()>=nextSpawnReconcileAt){spawnIds=dispatchWorkerReservations();nextSpawnReconcileAt=Date.now()+5000;}state.spawnPending=expectedWorkers.size;return json(res,200,{ok:true,session:worker.session,spawnIds});});
+    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');const installationId=uuid(hello.installationId)?hello.installationId:`legacy-${hello.clientId}`,scriptVersion=String(hello.scriptVersion||'older').slice(0,24),reloadRequired=!versionAtLeast(scriptVersion);expectedWorkers.delete(hello.clientId);let worker=workers.get(hello.clientId);if(worker?.installationId&&worker.installationId!==installationId&&isConnected(worker))return json(res,200,{ok:true,duplicate:true,reloadRequired,minimumVersion:STUDIO_VERSION,spawnIds:[]});if(!worker||worker.installationId!==installationId){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0,installationId};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=scriptVersion;worker.supportsHeartbeat=hello.heartbeat===true;worker.stage=String(hello.stage||'idle').slice(0,80);worker.progressAt=Number(hello.progressAt)||worker.seenAt;while(expectedWorkers.size&&activeWorkers()+expectedWorkers.size>state.workers)expectedWorkers.delete(expectedWorkers.keys().next().value);let spawnIds=[];if(isReady(worker)&&Date.now()>=nextSpawnReconcileAt){spawnIds=dispatchWorkerReservations();nextSpawnReconcileAt=Date.now()+5000;}state.spawnPending=expectedWorkers.size;return json(res,200,{ok:true,session:worker.session,spawnIds,reloadRequired,minimumVersion:STUDIO_VERSION});});
     if(u.pathname==='/api/catalog')return json(res,200,await catalog(Math.max(0,Number(u.searchParams.get('offset')||0)),Math.min(100,Math.max(1,Number(u.searchParams.get('limit')||40))),u.searchParams.get('folder')||'',u.searchParams.get('status')||'pending'));
     if(u.pathname==='/api/import-session'&&req.method==='POST')return json(res,200,await serial(async()=>beginManifestImport(await body(req))));
     if(u.pathname==='/api/import-session/file'&&req.method==='POST')return json(res,200,await serial(()=>stageManifestFile(req,u)));
@@ -178,14 +179,14 @@ const server=http.createServer(async(req,res)=>{
       res.writeHead(200,{'Content-Type':/\.gif$/i.test(file)?'image/gif':'image/png','Content-Length':stat.size,'Cache-Control':'no-store'});return createReadStream(file).pipe(res);
     }
     if(u.pathname==='/api/start'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');const input=await body(req),job=await createQueue(Number(input.limit),String(input.folder||''),Number(input.workers||1));return json(res,200,{queued:job.queued.length,skipped:job.skipped});});
-    if(u.pathname==='/api/workers'&&req.method==='POST')return await serial(async()=>{const input=await body(req),count=Number(input.workers);if(!Number.isInteger(count)||count<1||count>10)throw new Error('Choose 1–10 worker tabs');state.workers=count;expireWorkerReservations();const openFirst=readyWorkers()===0,targetReservations=Math.max(0,count-readyWorkers()-(openFirst?1:0));while(expectedWorkers.size>targetReservations)expectedWorkers.delete(expectedWorkers.keys().next().value);while(expectedWorkers.size<targetReservations)expectedWorkers.set(crypto.randomUUID(),{expiresAt:Date.now()+60000,dispatched:false});state.spawnPending=expectedWorkers.size;nextSpawnReconcileAt=0;await save();return json(res,200,{workers:count,spawnPending:expectedWorkers.size,openFirst});});
+    if(u.pathname==='/api/workers'&&req.method==='POST')return await serial(async()=>{const input=await body(req),count=Number(input.workers);if(!Number.isInteger(count)||count<1||count>10)throw new Error('Choose 1–10 worker tabs');state.workers=count;expireWorkerReservations();const connected=activeWorkers(),openFirst=connected===0,targetReservations=Math.max(0,count-connected-(openFirst?1:0));while(expectedWorkers.size>targetReservations)expectedWorkers.delete(expectedWorkers.keys().next().value);while(expectedWorkers.size<targetReservations)expectedWorkers.set(crypto.randomUUID(),{expiresAt:Date.now()+60000,dispatched:false});state.spawnPending=expectedWorkers.size;nextSpawnReconcileAt=0;await save();return json(res,200,{workers:count,spawnPending:expectedWorkers.size,openFirst,reusing:Math.min(count,connected)});});
     if(u.pathname==='/api/pause'&&req.method==='POST')return await serial(async()=>{state.paused=true;await save();return json(res,200,{ok:true});});
     if(u.pathname==='/api/resume'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');if(!readyWorkers())throw new Error('Worker 0.4.3 or newer is required before resuming');state.paused=false;state.running=state.cursor<state.queued.length||state.leases.length>0;await save();return json(res,200,{ok:true});});
     if(u.pathname==='/api/shutdown'&&req.method==='POST')return await serial(async()=>{shuttingDown=true;state.paused=true;await save();json(res,200,{ok:true,draining:state.leases.length});const timer=setInterval(()=>{if(!state.leases.length){clearInterval(timer);server.close();}},500);});
     if(u.pathname==='/api/next')return await serial(async()=>{
       const owner=workerOwner(req);if(!owner||!workers.get(owner)?.supportsHeartbeat)return json(res,403,{error:'Worker 0.4.3 or newer required'});
       if(!state.running||state.paused)return json(res,200,{batch:null});
-      if(state.leases.some(x=>x.owner===owner))return json(res,200,{batch:null,blocked:'This tab has an unresolved batch'});
+      const existing=state.leases.find(x=>x.owner===owner);if(existing)return json(res,200,{batch:null,blocked:{id:existing.id,itemCount:existing.items.length,issuedAt:existing.issuedAt}});
       if(liveLeaseCount()>=state.workers||state.cursor>=state.queued.length)return json(res,200,{batch:null});
       const lease={id:crypto.randomUUID(),owner,issuedAt:Date.now(),items:state.queued.slice(state.cursor,state.cursor+10)};state.cursor+=lease.items.length;state.leases.push(lease);await save();return json(res,200,{batch:lease});
     });
@@ -197,19 +198,20 @@ const server=http.createServer(async(req,res)=>{
     }
     if(u.pathname==='/api/result'&&req.method==='POST')return await serial(async()=>{
       const owner=workerOwner(req);if(!owner)return json(res,403,{error:'Updated worker required'});
-      const result=await body(req);const lease=state.leases.find(x=>x.id===result.id&&x.owner===owner);if(!lease)throw new Error('Unknown batch');
+      const result=await body(req);const lease=state.leases.find(x=>x.id===result.id&&x.owner===owner);if(!lease){const completed=completedLeases.get(result.id);if(completed?.owner===owner)return json(res,200,{ok:true,duplicate:true});throw new Error('Unknown batch');}
       if(!Array.isArray(result.outcomes)||result.outcomes.length!==lease.items.length)throw new Error('Outcome count mismatch');
       const outcomes=result.outcomes.map(o=>({status:o.status==='submitted'?'submitted':o.status==='retry'?'retry':'uncertain',note:o.status==='submitted'?'':String(o.note||'').slice(0,300)}));
       await updateManifest(lease.items,outcomes);
       const automaticRetries=[];let doneDelta=0,failedDelta=0;
       for(let i=0;i<outcomes.length;i++){const outcome=outcomes[i],item=lease.items[i],attempt=Number(item.attempt||0);if(outcome.status==='submitted'){doneDelta++;if(attempt>0)failedDelta--;}else{if(attempt===0)failedDelta++;if(outcome.status==='retry'&&attempt<MAX_AUTOMATIC_RETRIES)automaticRetries.push({...item,attempt:attempt+1});}}
       state.done+=doneDelta;state.failed=Math.max(0,state.failed+failedDelta);state.leases=state.leases.filter(x=>x!==lease);
+      completedLeases.set(lease.id,{owner,completedAt:Date.now()});
       if(automaticRetries.length){state.queued.splice(state.cursor,0,...automaticRetries);await saveQueue();}
       state.message=`${state.done} submitted; ${state.failed} unresolved${automaticRetries.length?`; ${automaticRetries.length} returned to the front of the queue for retry`:''}`;
       if(state.cursor>=state.queued.length&&!state.leases.length)state.running=false;await save();return json(res,200,{ok:true});
     });
     json(res,404,{error:'Not found'});
-  }catch(error){json(res,400,{error:error.message});}
+  }catch(error){console.error(`${req.method} ${req.url}:`,error);json(res,400,{error:error.message});}
 });
 server.listen(PORT,'127.0.0.1',()=>console.log(`Queue dashboard: http://127.0.0.1:${PORT}/\nUserscript: http://127.0.0.1:${PORT}/uploader.user.js`));
 // The local dashboard cannot be updated by Tampermonkey. Refresh its clean
@@ -249,5 +251,7 @@ const recoveryTimer=setInterval(recoverDisconnectedBatches,30000);
 recoveryTimer.unref();
 const workerPruneTimer=setInterval(()=>{for(const [id,worker] of workers){if(Date.now()-worker.seenAt>10*60*1000&&!state.leases.some(lease=>lease.owner===id))workers.delete(id);}},60000);
 workerPruneTimer.unref();
+const completedLeasePruneTimer=setInterval(()=>{for(const [id,value] of completedLeases)if(Date.now()-value.completedAt>10*60*1000)completedLeases.delete(id);},60000);
+completedLeasePruneTimer.unref();
 const importCleanupTimer=setInterval(async()=>{for(const [id,session] of importSessions)if(session.expiresAt<Date.now()){importSessions.delete(id);await fs.rm(session.stage,{recursive:true,force:true}).catch(()=>{});}},60000);
 importCleanupTimer.unref();
