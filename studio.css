@@ -53,6 +53,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .state-ready{border-left-color:var(--studio-good)}.state-ready .status-dot{background:var(--studio-good)}
 .state-working{border-left-color:var(--studio-accent)}.state-working .status-dot{background:var(--studio-accent);box-shadow:0 0 0 4px rgba(42,159,214,.12)}
 .state-opening{border-left-color:#777}.state-opening .status-dot{background:#777}
+.state-needed{border-left-color:var(--studio-warn)}.state-needed .status-dot{background:var(--studio-warn)}
 .state-update,.state-disconnected{border-left-color:var(--studio-bad)}.state-update .status-dot,.state-disconnected .status-dot{background:var(--studio-bad)}
 .catalog-panel{margin-top:0}
 .catalog-toolbar{align-items:end}
