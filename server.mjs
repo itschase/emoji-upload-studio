@@ -144,6 +144,7 @@ const server=http.createServer(async(req,res)=>{
       res.writeHead(200,{'Content-Type':/\.gif$/i.test(file)?'image/gif':'image/png','Content-Length':stat.size,'Cache-Control':'no-store'});return createReadStream(file).pipe(res);
     }
     if(u.pathname==='/api/start'&&req.method==='POST')return await serial(async()=>{const input=await body(req),job=await createQueue(Number(input.limit),String(input.folder||''),Number(input.workers||1));return json(res,200,{queued:job.queued.length,skipped:job.skipped});});
+    if(u.pathname==='/api/workers'&&req.method==='POST')return await serial(async()=>{const input=await body(req),count=Number(input.workers);if(!Number.isInteger(count)||count<1||count>10)throw new Error('Choose 1–10 worker tabs');state.workers=count;state.spawnPending=state.running?Math.max(0,count-activeWorkers()):0;await save();return json(res,200,{workers:count,spawnPending:state.spawnPending});});
     if(u.pathname==='/api/pause'&&req.method==='POST')return await serial(async()=>{state.paused=true;await save();return json(res,200,{ok:true});});
     if(u.pathname==='/api/resume'&&req.method==='POST')return await serial(async()=>{if(!activeWorkers())throw new Error('Updated worker is not connected');state.paused=false;state.running=state.cursor<state.queued.length||state.leases.length>0;await save();return json(res,200,{ok:true});});
     if(u.pathname==='/api/next')return await serial(async()=>{

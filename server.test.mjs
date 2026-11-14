@@ -52,6 +52,8 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     const hellos=await Promise.all(Array.from({length:3},()=>fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',clientId:crypto.randomUUID()})}).then(r=>r.json())));
     const multi=await fetch(base+'/api/start',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({limit:0,folder:'Parallel',workers:3})}).then(r=>r.json());
     assert.equal(multi.queued,23);
+    const changed=await fetch(base+'/api/workers',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({workers:10})}).then(r=>r.json());
+    assert.equal(changed.workers,10);
     const leases=await Promise.all(hellos.map(h=>fetch(base+'/api/next',{headers:{...headers,'X-Worker-Session':h.session}}).then(r=>r.json())));
     assert.deepEqual(leases.map(x=>x.batch.items.length),[10,10,3]);
     assert.equal(new Set(leases.flatMap(x=>x.batch.items.map(i=>i.filename))).size,23);

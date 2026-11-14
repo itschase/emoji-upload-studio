@@ -33,7 +33,7 @@ Choose a pack name and select as many PNG/GIF images as you want under **Import 
 
 Review the image previews and edit the metadata cards. Tags are prioritized with semicolons, such as `cat; cute; reaction; emoji`. The worker tries each tag against Emoji.gg's allowed list and requires at least three accepted tag chips before submitting an image. Save changes to write them to the pack's CSV. Existing pack folders with compatible `upload_manifest.csv` files also appear automatically.
 
-Enter the number of pending images to queue, or enter `0` for all pending images. Optionally enter one exact pack-folder name. Choose **1–10 parallel tabs**. **Submit queued images** starts the queue, and the connected worker opens the additional tabs in the background. Each tab receives separate batches of at most ten images. **Pause after batch** and **Resume** control the run. Keep the Emoji.gg worker tabs and local server open while it works. Start with one tab if Emoji.gg limits concurrent submissions on your account.
+Enter the number of pending images to queue, or enter `0` for all pending images. Optionally enter one exact pack-folder name. Choose **1–10 parallel tabs**. **Submit queued images** starts the queue, and the connected worker opens the additional tabs in the background. **Apply tab count** changes the limit during a run. Each tab receives separate batches of at most ten images. **Pause after batch** and **Resume** control the run. Keep the Emoji.gg worker tabs and local server open while it works. Start with one tab if Emoji.gg limits concurrent submissions on your account.
 
 ## Progress and recovery
 
