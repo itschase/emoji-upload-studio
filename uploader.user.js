@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Emoji.gg Local Upload Queue
+// @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
 // @version      0.3.0
-// @description  Processes the user's local upload manifests in batches of ten.
+// @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @match        https://emoji.gg/submit
 // @match        https://emoji.gg/submit/sticker
