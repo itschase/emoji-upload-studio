@@ -1,0 +1,111 @@
+// ==UserScript==
+// @name         Emoji.gg Local Upload Queue
+// @namespace    local.emoji.upload.queue
+// @version      0.3.0
+// @description  Processes the user's local upload manifests in batches of ten.
+// @license      MIT
+// @match        https://emoji.gg/submit
+// @match        https://emoji.gg/submit/sticker
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @connect      127.0.0.1
+// @updateURL    https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
+// @downloadURL  https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
+// @run-at       document-idle
+// ==/UserScript==
+(() => {
+  'use strict';
+  const base = 'http://127.0.0.1:43861';
+  let token = GM_getValue('queueToken','');
+  let workerSession='';
+  const badge = document.createElement('div');
+  badge.style.cssText = 'position:fixed;z-index:2147483647;bottom:12px;left:12px;background:#111;color:#eee;border:1px solid #555;padding:7px 10px;border-radius:7px;font:12px system-ui;max-width:360px';
+  const statusText=document.createElement('span');statusText.textContent='Local upload queue: checking';
+  const studioButton=document.createElement('button');studioButton.textContent='Open studio';studioButton.type='button';studioButton.style.cssText='margin-left:9px;background:#333;color:#eee;border:1px solid #666;border-radius:5px;padding:3px 6px;cursor:pointer';studioButton.title='Open the local upload studio in a new tab';
+  studioButton.addEventListener('click',()=>window.open(base,'_blank','noopener'));
+  badge.append(statusText,studioButton);document.body.append(badge);
+  function say(message) { statusText.textContent = `Local upload queue: ${message}`; }
+  function pair() { return new Promise((resolve,reject)=>GM_xmlhttpRequest({method:'GET',url:`${base}/api/pair`,responseType:'json',headers:{'X-Queue-Pair':'local-userscript'},timeout:10000,onload:r=>r.status===200&&r.response?.token?resolve(r.response.token):reject(new Error('Open the local studio to pair')),onerror:()=>reject(new Error('Local studio unavailable')),ontimeout:()=>reject(new Error('Pairing timed out'))})); }
+  function request(route, data, responseType = 'json') {
+    return new Promise((resolve, reject) => GM_xmlhttpRequest({
+      method: data === undefined ? 'GET' : 'POST', url: `${base}/api/${route}`, responseType,
+      headers: { 'X-Queue-Token': token, ...(workerSession ? {'X-Worker-Session':workerSession} : {}), ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      data: data === undefined ? undefined : JSON.stringify(data), timeout: 15000,
+      onload: r => r.status >= 200 && r.status < 300 ? resolve(r.response) : reject(new Error(`${route}: ${r.status} ${typeof r.response === 'string' ? r.response.slice(0,120) : ''}`)),
+      onerror: () => reject(new Error(`${route}: local server unavailable`)), ontimeout: () => reject(new Error(`${route}: timed out`))
+    }));
+  }
+  function wait(check, timeout = 30000) { return new Promise((resolve, reject) => { const end = Date.now() + timeout; const timer = setInterval(() => { const value = check(); if (value) { clearInterval(timer); resolve(value); } else if (Date.now() > end) { clearInterval(timer); reject(new Error('Site did not advance in time')); } }, 150); }); }
+  function setValue(el, value) { const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto,'value').set.call(el,value); el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }
+  async function digest(blob) { const bytes = await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
+  async function addTags(form, tags) {
+    const input = form.querySelector('.tag-input'); if(!input) throw new Error('Tag field missing');
+    const accepted=[];
+    const candidates=[...new Set([...tags.split(';').map(x=>x.trim()).filter(Boolean),'emoji','cute','reaction','fun','discord'])];
+    for(const tag of candidates) {
+      if(accepted.length>=10)break;
+      const before=form.querySelectorAll('.tag-container .tag').length;
+      setValue(input,tag); input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+      input.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));
+      const after=form.querySelectorAll('.tag-container .tag').length;
+      if(after>before)accepted.push(tag);
+    }
+    if(accepted.length<3)throw new Error(`Only ${accepted.length} accepted tags for ${form.querySelector('input[name="names[]"]')?.value||'item'}`);
+    console.info('[Emoji queue] accepted tags:',accepted);
+    return accepted;
+  }
+  async function upload(batch) {
+    const files=[];const byHash=new Map();
+    for(let i=0;i<batch.items.length;i++) { const item=batch.items[i]; const blob=await request(`file?index=${i}` ,undefined,'blob'); const file=new File([blob],item.filename,{type:/\.gif$/i.test(item.filename)?'image/gif':'image/png'}); files.push(file); byHash.set(await digest(file),item); }
+    const input=await wait(()=>document.querySelector('#media-upload'));
+    const transfer=new DataTransfer(); files.forEach(file=>transfer.items.add(file)); input.files=transfer.files; input.dispatchEvent(new Event('change',{bubbles:true}));
+    await wait(()=>document.querySelectorAll('.emojis-form').length===files.length && [...document.querySelectorAll('.emojis-form img[src^="blob:"]')].length===files.length,30000);
+    const forms=[...document.querySelectorAll('.emojis-form')];
+    const ordered=[];
+    for(const form of forms){const src=form.querySelector('img[src^="blob:"]')?.src;if(!src)throw new Error('Missing preview image');const preview=await fetch(src).then(r=>r.blob());const item=byHash.get(await digest(preview));if(!item)throw new Error('Preview could not be matched to local image');ordered.push(item);}
+    if(new Set(ordered).size!==files.length)throw new Error('Duplicate preview mapping');
+    for(let i=0;i<forms.length;i++){
+      const form=forms[i],item=ordered[i];
+      setValue(form.querySelector('input[name="names[]"]'),item.title);
+      form.querySelector('select[name="categories[]"]').value=item.category_value;form.querySelector('select[name="categories[]"]').dispatchEvent(new Event('change',{bubbles:true}));
+      const license=form.querySelector('select[name="licenses[]"]');license.value=item.license==='CC BY 4.0'?'1':'0';license.dispatchEvent(new Event('change',{bubbles:true}));
+      setValue(form.querySelector('textarea[name="descriptions[]"]'),item.description);
+      const accepted=await addTags(form,item.tags||'');
+      say(`item ${i+1}/${forms.length}: ${accepted.length} accepted tags`);
+      if(i<forms.length-1){const next=[...form.querySelectorAll('button')].find(x=>x.textContent.trim()==='Next');if(!next)throw new Error(`Next button missing at item ${i+1}`);next.click();}
+    }
+    const finish=document.querySelector('.finish-forms');if(!finish)throw new Error('Finish button missing');finish.click();
+    await wait(()=>{const x=document.querySelector('#final-submit');return x&&x.offsetParent!==null&&x},15000);
+    document.querySelector('#final-submit').click();
+    batch.submittedToSite = true;
+    await wait(()=>document.querySelectorAll('.list-group-item strong').length===files.length || document.querySelector('.upload-error:not([style*="display: none"])'),120000);
+    const results=[...document.querySelectorAll('.list-group-item')].filter(e=>e.querySelector('strong'));
+    if(results.length!==files.length)throw new Error(`Submission outcome uncertain: ${results.length}/${files.length} rows`);
+    // Result order follows the site's displayed form order, which was mapped by preview hash.
+    const resultByItem=new Map(results.map((el,i)=>[ordered[i],{status:el.querySelector('.badge.bg-success')?'submitted':'retry',note:el.innerText.slice(-180)}]));
+    return batch.items.map(item=>resultByItem.get(item));
+  }
+  let busy=false;
+  async function tick() {
+    if(busy)return;busy=true;
+    try{
+      if(!token){token=await pair();GM_setValue('queueToken',token);say('paired with local studio');}
+      workerSession=(await request('hello',{version:'0.3.0'})).session;
+      const status=await request('status');if(!status.running||status.paused){say(status.paused?'paused':`${status.done} submitted; idle`);return;}
+      if(location.pathname==='/submit/sticker'){location.href='/submit';return;}
+      if(location.pathname!=='/submit')return;
+      const {batch}=await request('next');if(!batch)return;
+      say(`uploading ${batch.items.length}; ${status.queued} queued`);
+      try{const outcomes=await upload(batch);await request('result',{id:batch.id,outcomes});say(`${outcomes.filter(x=>x.status==='submitted').length}/${outcomes.length} submitted`);location.href='/submit/sticker';}
+      catch(error){
+        const status=batch.submittedToSite?'uncertain':'retry';
+        say(`batch ${status}: ${error.message}`);
+        await request('result',{id:batch.id,outcomes:batch.items.map(()=>({status,note:error.message}))});
+        console.error('[Emoji queue]',error);
+        location.href='/submit/sticker';
+      }
+    }catch(error){if(/Invalid queue token/.test(error.message)){token='';GM_setValue('queueToken','');workerSession='';}say(error.message);}finally{busy=false;}
+  }
+  setInterval(tick,2500);tick();
+})();
