@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 
-test('local import, catalog, edit, and worker gate', async () => {
+test('local import, worker spawning, and parallel batch leases', async () => {
   const workspace=path.resolve(process.cwd());
   const root=path.resolve(workspace,`.queue-test-${process.pid}`);
   assert.ok(root.startsWith(workspace+path.sep));
@@ -34,16 +35,38 @@ test('local import, catalog, edit, and worker gate', async () => {
     assert.equal(paired.token,token);
     const secondPair=await fetch(base+'/api/pair',{headers:{'X-Queue-Pair':'local-userscript'}});
     assert.equal(secondPair.status,403,'pairing token is one-use');
-    const hello=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.3.0'})}).then(r=>r.json());
+    const firstClientId=crypto.randomUUID();
+    const hello=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',clientId:firstClientId})}).then(r=>r.json());
     assert.ok(hello.session);
-    const queued=await fetch(base+'/api/start',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({limit:0,folder:'Sample'})}).then(r=>r.json());
+    const queued=await fetch(base+'/api/start',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({limit:0,folder:'Sample',workers:3})}).then(r=>r.json());
     assert.equal(queued.queued,1);
+    const spawn=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',clientId:firstClientId})}).then(r=>r.json());
+    assert.equal(spawn.spawn,2,'the first worker opens two more tabs');
     const workerHeaders={...headers,'X-Worker-Session':hello.session};
     const batch=await fetch(base+'/api/next',{headers:workerHeaders}).then(r=>r.json());
     assert.equal(batch.batch.items.length,1);
     const result=await fetch(base+'/api/result',{method:'POST',headers:{...workerHeaders,'Content-Type':'application/json'},body:JSON.stringify({id:batch.batch.id,outcomes:[{status:'submitted'}]})});
     assert.equal(result.status,200);
     assert.ok((await fs.stat(path.join(root,'.uploaded-Sample','upload_manifest.csv'))).isFile());
+    for(let i=0;i<23;i++)assert.equal((await fetch(base+`/api/import?pack=Parallel&filename=icon-${i}.png`,{method:'POST',headers,body:png})).status,200);
+    const hellos=await Promise.all(Array.from({length:3},()=>fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',clientId:crypto.randomUUID()})}).then(r=>r.json())));
+    const multi=await fetch(base+'/api/start',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({limit:0,folder:'Parallel',workers:3})}).then(r=>r.json());
+    assert.equal(multi.queued,23);
+    const leases=await Promise.all(hellos.map(h=>fetch(base+'/api/next',{headers:{...headers,'X-Worker-Session':h.session}}).then(r=>r.json())));
+    assert.deepEqual(leases.map(x=>x.batch.items.length),[10,10,3]);
+    assert.equal(new Set(leases.flatMap(x=>x.batch.items.map(i=>i.filename))).size,23);
+    const repeat=await fetch(base+'/api/next',{headers:{...headers,'X-Worker-Session':hellos[0].session}}).then(r=>r.json());
+    assert.equal(repeat.batch,null,'an active worker must not receive a second lease');
+    const file=await fetch(base+`/api/file?batch=${leases[0].batch.id}&index=0`,{headers:{...headers,'X-Worker-Session':hellos[1].session}});
+    assert.equal(file.status,404,'workers cannot read each others leases');
+    for(const index of [2,0,1]){
+      const lease=leases[index].batch;
+      const response=await fetch(base+'/api/result',{method:'POST',headers:{...headers,'X-Worker-Session':hellos[index].session,'Content-Type':'application/json'},body:JSON.stringify({id:lease.id,outcomes:lease.items.map(()=>({status:'submitted'}))})});
+      assert.equal(response.status,200);
+    }
+    const final=await fetch(base+'/api/status',{headers}).then(r=>r.json());
+    assert.equal(final.done,23);assert.equal(final.leased,0);assert.equal(final.running,false);
+    assert.ok((await fs.stat(path.join(root,'.uploaded-Parallel','upload_manifest.csv'))).isFile());
   } finally {
     child.kill();
     await new Promise(resolve=>child.once('exit',resolve));

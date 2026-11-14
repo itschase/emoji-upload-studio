@@ -18,14 +18,18 @@ await fs.mkdir(DATA, { recursive: true });
 let token;
 try { token = (await fs.readFile(TOKEN_FILE, 'utf8')).trim(); }
 catch { token = crypto.randomBytes(24).toString('hex'); await fs.writeFile(TOKEN_FILE, token, { mode: 0o600 }); }
-let state = { running: false, paused: true, limit: 0, queued: [], cursor: 0, leased: null, done: 0, failed: 0, skipped: 0, message: '' };
-let workerSeenAt=0;
+let state = { running: false, paused: true, limit: 0, queued: [], cursor: 0, leases: [], workers: 1, spawnPending: 0, done: 0, failed: 0, skipped: 0, message: '' };
+const workers=new Map();
 let pairingUntil=0;
-const workerSession=crypto.randomBytes(24).toString('hex');
+let mutation=Promise.resolve();
+function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
+function activeWorkers(){return [...workers.entries()].filter(([id,w])=>Date.now()-w.seenAt<15000||state.leases.some(lease=>lease.owner===id)).length;}
+function workerSummaries(){return [...workers.entries()].filter(([id,w])=>Date.now()-w.seenAt<15000||state.leases.some(lease=>lease.owner===id)).map(([id])=>({id:id.slice(0,8),inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0}));}
 try { state = { ...state, ...JSON.parse(await fs.readFile(STATE_FILE, 'utf8')) }; }
 catch { /* first run */ }
 try { state.queued = JSON.parse(await fs.readFile(QUEUE_FILE,'utf8')); }
 catch { state.queued=[]; }
+state.leases ||= [];
 // Recovery occurs after the manifest writer is defined below.
 
 function parseCsv(text) {
@@ -50,18 +54,20 @@ async function updateManifest(items, outcomes) {
   }
 }
 // A restart never silently repeats an in-flight submission.
-if(state.leased){
-  await updateManifest(state.leased.items,state.leased.items.map(()=>({status:'uncertain',note:'Queue process stopped during submission; review before retry'})));
-  state.cursor+=state.leased.items.length;
-  state.message=`Uncertain batch ${state.leased.id} needs review`;
-  state.leased=null;state.running=false;state.paused=true;
+if(state.leased){state.leases=[...(state.leases||[]),state.leased];state.cursor+=state.leased.items.length;delete state.leased;}
+if(state.leases?.length){
+  for(const lease of state.leases)await updateManifest(lease.items,lease.items.map(()=>({status:'uncertain',note:'Queue process stopped during submission; review before retry'})));
+  state.failed+=state.leases.reduce((n,lease)=>n+lease.items.length,0);
+  state.message=`${state.leases.length} in-flight batches need review`;
+  state.leases=[];state.running=false;state.paused=true;
 }
 await save();
-async function createQueue(limit, folderFilter='') {
-  if(Date.now()-workerSeenAt>15000)throw new Error('Updated Emoji.gg worker is not connected. Install the latest local userscript and leave its Emoji.gg tab open.');
+async function createQueue(limit, folderFilter='', workerCount=1) {
+  if(!activeWorkers())throw new Error('Updated Emoji.gg worker is not connected. Install the latest local userscript and leave its Emoji.gg tab open.');
   if(!Number.isInteger(limit)||limit<0||limit>100000)throw new Error('Choose 0 (all) or 1–100000 images');
-  if(state.running && state.cursor<state.queued.length)throw new Error('Finish the current queue before starting another');
-  if(state.leased)throw new Error('A batch is already in flight');
+  if(!Number.isInteger(workerCount)||workerCount<1||workerCount>10)throw new Error('Choose 1–10 worker tabs');
+  if(state.running && (state.cursor<state.queued.length||state.leases.length))throw new Error('Finish the current queue before starting another');
+  if(state.leases.length)throw new Error('A batch is already in flight');
   const dirs=(await fs.readdir(ROOT,{withFileTypes:true})).filter(d=>d.isDirectory()&&!d.name.startsWith('.')&&(!folderFilter||d.name===folderFilter)).map(d=>d.name).sort();
   const items=[]; const skipped=[];
   for(const folder of dirs){
@@ -73,7 +79,7 @@ async function createQueue(limit, folderFilter='') {
     if(limit && items.length>=limit)break;
   }
   const temp=QUEUE_FILE+'.tmp';await fs.writeFile(temp,JSON.stringify(items));await fs.rename(temp,QUEUE_FILE);
-  state={running:items.length>0,paused:false,limit,queued:items,cursor:0,leased:null,done:0,failed:0,skipped:skipped.length,message:skipped.slice(0,5).join('; ')};
+  state={running:items.length>0,paused:false,limit,queued:items,cursor:0,leases:[],workers:workerCount,spawnPending:Math.max(0,workerCount-activeWorkers()),done:0,failed:0,skipped:skipped.length,message:skipped.slice(0,5).join('; ')};
   await save(); return state;
 }
 async function catalog(offset=0,limit=40,folderFilter='',status='pending'){
@@ -85,8 +91,10 @@ async function catalog(offset=0,limit=40,folderFilter='',status='pending'){
   return {total,offset,limit,items,folders};
 }
 function safeLeaf(value){return value&&!value.includes('..')&&!/[\\/]/.test(value);}
+function uuid(value){return typeof value==='string'&&/^[0-9a-f-]{36}$/i.test(value);}
+function workerOwner(req){return [...workers.entries()].find(([,worker])=>worker.session===req.headers['x-worker-session'])?.[0];}
 async function editRow(input){
-  if(state.running&&state.cursor<state.queued.length)throw new Error('Finish the current queue before editing');
+  if(state.running&&(state.cursor<state.queued.length||state.leases.length))throw new Error('Finish the current queue before editing');
   const folder=String(input.folder||''),filename=String(input.filename||'');if(!safeLeaf(folder)||!safeLeaf(filename))throw new Error('Invalid item path');
   const file=path.join(ROOT,folder,'upload_manifest.csv');const rows=parseCsv(await fs.readFile(file,'utf8'));
   const row=rows.find(r=>r.filename===filename);if(!row)throw new Error('Manifest row missing');
@@ -124,44 +132,44 @@ const server=http.createServer(async(req,res)=>{
     if(u.pathname==='/api/pair'&&req.headers['x-queue-pair']==='local-userscript'&&Date.now()<pairingUntil){pairingUntil=0;res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});return res.end(JSON.stringify({token}));}
     const auth=req.headers['x-queue-token']===token || u.searchParams.get('token')===token;
     if(!auth)return json(res,403,{error:'Invalid queue token'});
-    if(u.pathname==='/api/status')return json(res,200,{...state,queued:state.queued.length-state.cursor,leased:state.leased?.items.length||0,workerReady:Date.now()-workerSeenAt<15000});
+    if(u.pathname==='/api/status')return json(res,200,{...state,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:activeWorkers()>0,activeWorkers:activeWorkers(),workerTabs:workerSummaries()});
     if(u.pathname==='/api/enable-pairing'&&req.method==='POST'){pairingUntil=Date.now()+60000;return json(res,200,{ok:true,expiresInSeconds:60});}
-    if(u.pathname==='/api/hello'&&req.method==='POST'){const hello=await body(req);if(hello.version!=='0.3.0')throw new Error('Worker update required');workerSeenAt=Date.now();return json(res,200,{ok:true,session:workerSession});}
+    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();const spawn=state.running&&state.spawnPending>0?state.spawnPending:0;state.spawnPending=0;return json(res,200,{ok:true,session:worker.session,spawn});});
     if(u.pathname==='/api/catalog')return json(res,200,await catalog(Math.max(0,Number(u.searchParams.get('offset')||0)),Math.min(100,Math.max(1,Number(u.searchParams.get('limit')||40))),u.searchParams.get('folder')||'',u.searchParams.get('status')||'pending'));
-    if(u.pathname==='/api/import'&&req.method==='POST')return json(res,200,await importImage(req,u));
-    if(u.pathname==='/api/edit'&&req.method==='POST')return json(res,200,{item:await editRow(await body(req))});
+    if(u.pathname==='/api/import'&&req.method==='POST')return json(res,200,await serial(()=>importImage(req,u)));
+    if(u.pathname==='/api/edit'&&req.method==='POST')return json(res,200,{item:await serial(async()=>editRow(await body(req)))});
     if(u.pathname==='/api/preview'){
       const folder=u.searchParams.get('folder')||'',filename=u.searchParams.get('filename')||'';if(!safeLeaf(folder)||!safeLeaf(filename))throw new Error('Invalid item path');
       const file=path.join(ROOT,folder,filename);const stat=await fs.stat(file);if(stat.size>256*1024)throw new Error('Preview too large');
       res.writeHead(200,{'Content-Type':/\.gif$/i.test(file)?'image/gif':'image/png','Content-Length':stat.size,'Cache-Control':'no-store'});return createReadStream(file).pipe(res);
     }
-    if(u.pathname==='/api/start'&&req.method==='POST'){const input=await body(req),job=await createQueue(Number(input.limit),String(input.folder||''));return json(res,200,{queued:job.queued.length,skipped:job.skipped});}
-    if(u.pathname==='/api/pause'&&req.method==='POST'){state.paused=true;await save();return json(res,200,{ok:true});}
-    if(u.pathname==='/api/resume'&&req.method==='POST'){if(Date.now()-workerSeenAt>15000)throw new Error('Updated worker is not connected');state.paused=false;state.running=state.cursor<state.queued.length;await save();return json(res,200,{ok:true});}
-    if(u.pathname==='/api/next'){
-      if(req.headers['x-worker-session']!==workerSession)return json(res,403,{error:'Updated worker required'});
+    if(u.pathname==='/api/start'&&req.method==='POST')return await serial(async()=>{const input=await body(req),job=await createQueue(Number(input.limit),String(input.folder||''),Number(input.workers||1));return json(res,200,{queued:job.queued.length,skipped:job.skipped});});
+    if(u.pathname==='/api/pause'&&req.method==='POST')return await serial(async()=>{state.paused=true;await save();return json(res,200,{ok:true});});
+    if(u.pathname==='/api/resume'&&req.method==='POST')return await serial(async()=>{if(!activeWorkers())throw new Error('Updated worker is not connected');state.paused=false;state.running=state.cursor<state.queued.length||state.leases.length>0;await save();return json(res,200,{ok:true});});
+    if(u.pathname==='/api/next')return await serial(async()=>{
+      const owner=workerOwner(req);if(!owner)return json(res,403,{error:'Updated worker required'});
       if(!state.running||state.paused)return json(res,200,{batch:null});
-      if(state.leased)return json(res,200,{batch:state.leased});
-      if(state.cursor>=state.queued.length){state.running=false;await save();return json(res,200,{batch:null});}
-      state.leased={id:crypto.randomUUID(),items:state.queued.slice(state.cursor,state.cursor+10)};await save();return json(res,200,{batch:state.leased});
-    }
+      if(state.leases.some(x=>x.owner===owner))return json(res,200,{batch:null,blocked:'This tab has an unresolved batch'});
+      if(state.leases.length>=state.workers||state.cursor>=state.queued.length)return json(res,200,{batch:null});
+      const lease={id:crypto.randomUUID(),owner,issuedAt:Date.now(),items:state.queued.slice(state.cursor,state.cursor+10)};state.cursor+=lease.items.length;state.leases.push(lease);await save();return json(res,200,{batch:lease});
+    });
     if(u.pathname==='/api/file'){
-      if(req.headers['x-worker-session']!==workerSession)return json(res,403,{error:'Updated worker required'});
-      const batch=state.leased;const index=Number(u.searchParams.get('index'));const item=batch?.items[index];if(!item)return json(res,404,{error:'File not leased'});
+      const owner=workerOwner(req);if(!owner)return json(res,403,{error:'Updated worker required'});
+      const batch=state.leases.find(x=>x.id===u.searchParams.get('batch')&&x.owner===owner);const index=Number(u.searchParams.get('index'));const item=batch?.items[index];if(!item)return json(res,404,{error:'File not leased'});
       const file=path.join(ROOT,item.folder,item.filename);const stat=await fs.stat(file);if(stat.size>256*1024)throw new Error('File grew above 256 KB');
       res.writeHead(200,{'Content-Type':/\.gif$/i.test(file)?'image/gif':'image/png','Content-Length':stat.size,'Cache-Control':'no-store'});return createReadStream(file).pipe(res);
     }
-    if(u.pathname==='/api/result'&&req.method==='POST'){
-      if(req.headers['x-worker-session']!==workerSession)return json(res,403,{error:'Updated worker required'});
-      const result=await body(req);const lease=state.leased;if(!lease||result.id!==lease.id)throw new Error('Unknown batch');
+    if(u.pathname==='/api/result'&&req.method==='POST')return await serial(async()=>{
+      const owner=workerOwner(req);if(!owner)return json(res,403,{error:'Updated worker required'});
+      const result=await body(req);const lease=state.leases.find(x=>x.id===result.id&&x.owner===owner);if(!lease)throw new Error('Unknown batch');
       if(!Array.isArray(result.outcomes)||result.outcomes.length!==lease.items.length)throw new Error('Outcome count mismatch');
       const outcomes=result.outcomes.map(o=>({status:o.status==='submitted'?'submitted':o.status==='retry'?'retry':'uncertain',note:o.status==='submitted'?'':String(o.note||'').slice(0,300)}));
       await updateManifest(lease.items,outcomes);
       state.done+=outcomes.filter(o=>o.status==='submitted').length;state.failed+=outcomes.filter(o=>o.status!=='submitted').length;
-      state.cursor+=lease.items.length;state.leased=null;state.message=`${state.done} submitted; ${state.failed} unresolved`;
-      if(state.cursor>=state.queued.length)state.running=false;await save();return json(res,200,{ok:true});
-    }
+      state.leases=state.leases.filter(x=>x!==lease);state.message=`${state.done} submitted; ${state.failed} unresolved`;
+      if(state.cursor>=state.queued.length&&!state.leases.length)state.running=false;await save();return json(res,200,{ok:true});
+    });
     json(res,404,{error:'Not found'});
   }catch(error){json(res,400,{error:error.message});}
 });
-server.listen(PORT,'127.0.0.1',()=>console.log(`Queue dashboard: http://127.0.0.1:${PORT}/\nUserscript: http://127.0.0.1:${PORT}/uploader.user.js\nToken: ${token}`));
+server.listen(PORT,'127.0.0.1',()=>console.log(`Queue dashboard: http://127.0.0.1:${PORT}/\nUserscript: http://127.0.0.1:${PORT}/uploader.user.js`));

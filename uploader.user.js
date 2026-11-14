@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.3.4
+// @version      0.4.0
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -10,6 +10,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_openInTab
 // @connect      127.0.0.1
 // @updateURL    https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
 // @downloadURL  https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
@@ -19,6 +20,8 @@
   'use strict';
   const base = 'http://127.0.0.1:43861';
   let token = GM_getValue('queueToken','');
+  const clientId=new URLSearchParams(location.search).get('upload_studio_worker')||sessionStorage.getItem('uploadStudioClientId')||crypto.randomUUID();
+  sessionStorage.setItem('uploadStudioClientId',clientId);
   let workerSession='';
   const badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;z-index:2147483647;bottom:12px;left:12px;background:#111;color:#eee;border:1px solid #555;padding:7px 10px;border-radius:7px;font:12px system-ui;max-width:360px';
@@ -29,7 +32,7 @@
   queueButton.addEventListener('click',async()=>{try{await request(queueButton.dataset.action,{});say(queueButton.dataset.action==='pause'?'pausing after this batch':'resuming queue');}catch(error){say(error.message);}});
   badge.append(statusText,studioLink,queueText,queueButton);document.body.append(badge);
   function say(message) { statusText.textContent = `Local upload queue: ${message}`; }
-  function showQueue(status){queueText.textContent=`${status.done} submitted · ${status.queued} queued${status.leased?` · ${status.leased} processing`:''} · ${status.failed} failed`;queueButton.dataset.action=status.paused?'resume':'pause';queueButton.textContent=status.paused?'Resume queue':'Pause after batch';queueButton.style.display=status.running||status.paused&&status.queued?'inline-block':'none';}
+  function showQueue(status){queueText.textContent=`${status.activeWorkers}/${status.workers} tabs · ${status.done} submitted · ${status.queued} queued${status.leased?` · ${status.leased} processing`:''} · ${status.failed} failed`;queueButton.dataset.action=status.paused?'resume':'pause';queueButton.textContent=status.paused?'Resume queue':'Pause after batch';queueButton.style.display=status.running||status.paused&&status.queued?'inline-block':'none';}
   function pair() { return new Promise((resolve,reject)=>GM_xmlhttpRequest({method:'GET',url:`${base}/api/pair`,responseType:'json',headers:{'X-Queue-Pair':'local-userscript'},timeout:10000,onload:r=>r.status===200&&r.response?.token?resolve(r.response.token):reject(new Error(r.status===404?'Older Upload Studio server active':'Waiting for local worker pairing')),onerror:()=>reject(new Error('Local studio unavailable')),ontimeout:()=>reject(new Error('Pairing timed out'))})); }
   function legacyWorkerVisible(){return [...document.querySelectorAll('div')].some(el=>el!==badge&&el.childNodes.length===1&&el.firstChild?.nodeType===Node.TEXT_NODE&&el.textContent?.startsWith('Local upload queue:'));}
   function request(route, data, responseType = 'json') {
@@ -62,7 +65,7 @@
   }
   async function upload(batch) {
     const files=[];const byHash=new Map();
-    for(let i=0;i<batch.items.length;i++) { const item=batch.items[i]; const blob=await request(`file?index=${i}` ,undefined,'blob'); const file=new File([blob],item.filename,{type:/\.gif$/i.test(item.filename)?'image/gif':'image/png'}); files.push(file); byHash.set(await digest(file),item); }
+    for(let i=0;i<batch.items.length;i++) { const item=batch.items[i]; const blob=await request(`file?batch=${encodeURIComponent(batch.id)}&index=${i}` ,undefined,'blob'); const file=new File([blob],item.filename,{type:/\.gif$/i.test(item.filename)?'image/gif':'image/png'}); files.push(file); byHash.set(await digest(file),item); }
     const input=await wait(()=>document.querySelector('#media-upload'));
     const transfer=new DataTransfer(); files.forEach(file=>transfer.items.add(file)); input.files=transfer.files; input.dispatchEvent(new Event('change',{bubbles:true}));
     await wait(()=>document.querySelectorAll('.emojis-form').length===files.length && [...document.querySelectorAll('.emojis-form img[src^="blob:"]')].length===files.length,30000);
@@ -96,7 +99,8 @@
     if(busy||legacyMode)return;busy=true;
     try{
       if(!token){token=await pair();GM_setValue('queueToken',token);say('paired with local studio');}
-      workerSession=(await request('hello',{version:'0.3.0'})).session;
+      const hello=await request('hello',{version:'0.4.0',clientId});workerSession=hello.session;
+      for(let i=0;i<hello.spawn;i++)GM_openInTab(`https://emoji.gg/submit?upload_studio_worker=${crypto.randomUUID()}`,{active:false,insert:true});
       const status=await request('status');showQueue(status);if(!status.running||status.paused){say(status.paused?'paused':'idle');return;}
       if(location.pathname==='/submit/sticker'){location.href='/submit';return;}
       if(location.pathname!=='/submit')return;
