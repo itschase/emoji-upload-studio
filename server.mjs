@@ -3,6 +3,11 @@ import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {checkUpdate,applyUpdate} from './update.mjs';
+
+const STUDIO_VERSION='0.4.2';
 
 let localConfig={};
 try { localConfig=JSON.parse(await fs.readFile(new URL('./config.local.json',import.meta.url),'utf8')); } catch { /* set root through environment instead */ }
@@ -22,10 +27,12 @@ let state = { running: false, paused: true, limit: 0, queued: [], cursor: 0, lea
 const workers=new Map();
 let pairingUntil=0;
 let shuttingDown=false;
+let checkingUpdate=false;
+let updateMessage='';
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
 function activeWorkers(){return [...workers.entries()].filter(([id,w])=>Date.now()-w.seenAt<15000||state.leases.some(lease=>lease.owner===id)).length;}
-function workerSummaries(){return [...workers.entries()].filter(([id,w])=>Date.now()-w.seenAt<15000||state.leases.some(lease=>lease.owner===id)).map(([id])=>({id:id.slice(0,8),inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0}));}
+function workerSummaries(){return [...workers.entries()].filter(([id,w])=>Date.now()-w.seenAt<15000||state.leases.some(lease=>lease.owner===id)).map(([id,w])=>({id:id.slice(0,8),version:w.scriptVersion||'older',inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0}));}
 try { state = { ...state, ...JSON.parse(await fs.readFile(STATE_FILE, 'utf8')) }; }
 catch { /* first run */ }
 try { state.queued = JSON.parse(await fs.readFile(QUEUE_FILE,'utf8')); }
@@ -134,9 +141,9 @@ const server=http.createServer(async(req,res)=>{
     if(u.pathname==='/api/pair'&&req.headers['x-queue-pair']==='local-userscript'&&Date.now()<pairingUntil){pairingUntil=0;res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});return res.end(JSON.stringify({token}));}
     const auth=req.headers['x-queue-token']===token || u.searchParams.get('token')===token;
     if(!auth)return json(res,403,{error:'Invalid queue token'});
-    if(u.pathname==='/api/status')return json(res,200,{...state,protocolVersion:'0.4.0',root:ROOT,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:activeWorkers()>0,activeWorkers:activeWorkers(),workerTabs:workerSummaries()});
+    if(u.pathname==='/api/status')return json(res,200,{...state,protocolVersion:'0.4.0',studioVersion:STUDIO_VERSION,updateMessage,root:ROOT,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:activeWorkers()>0,activeWorkers:activeWorkers(),workerTabs:workerSummaries()});
     if(u.pathname==='/api/enable-pairing'&&req.method==='POST'){pairingUntil=Date.now()+60000;return json(res,200,{ok:true,expiresInSeconds:60});}
-    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();const spawn=state.running&&state.spawnPending>0?Math.max(0,state.workers-activeWorkers()):0;state.spawnPending=0;return json(res,200,{ok:true,session:worker.session,spawn});});
+    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=String(hello.scriptVersion||'older').slice(0,24);const spawn=state.running&&state.spawnPending>0?Math.max(0,state.workers-activeWorkers()):0;state.spawnPending=0;return json(res,200,{ok:true,session:worker.session,spawn});});
     if(u.pathname==='/api/catalog')return json(res,200,await catalog(Math.max(0,Number(u.searchParams.get('offset')||0)),Math.min(100,Math.max(1,Number(u.searchParams.get('limit')||40))),u.searchParams.get('folder')||'',u.searchParams.get('status')||'pending'));
     if(u.pathname==='/api/import'&&req.method==='POST')return json(res,200,await serial(()=>importImage(req,u)));
     if(u.pathname==='/api/edit'&&req.method==='POST')return json(res,200,{item:await serial(async()=>editRow(await body(req)))});
@@ -177,3 +184,22 @@ const server=http.createServer(async(req,res)=>{
   }catch(error){json(res,400,{error:error.message});}
 });
 server.listen(PORT,'127.0.0.1',()=>console.log(`Queue dashboard: http://127.0.0.1:${PORT}/\nUserscript: http://127.0.0.1:${PORT}/uploader.user.js`));
+// The local dashboard cannot be updated by Tampermonkey. Refresh its clean
+// official Git checkout while idle or paused, then restart without touching
+// the separate queue and manifest files.
+async function checkStudioUpdate(){
+  if(checkingUpdate||shuttingDown)return;
+  checkingUpdate=true;
+  try{
+    const update=await checkUpdate();
+    if(!update.available){updateMessage='';return;}
+    if(!state.paused&&state.running||state.leases.length){updateMessage='Studio update ready; waiting for a pause between batches';return;}
+    shuttingDown=true;
+    await applyUpdate(update.remote);
+    updateMessage='Applying Studio update';
+    server.close(()=>{const child=spawn(process.execPath,[fileURLToPath(import.meta.url)],{cwd:path.dirname(fileURLToPath(import.meta.url)),env:process.env,detached:true,windowsHide:true,stdio:'inherit'});child.unref();});
+  }catch(error){shuttingDown=false;updateMessage=`Update skipped: ${error.message}`;}
+  finally{checkingUpdate=false;}
+}
+const updateTimer=setInterval(checkStudioUpdate,15*60*1000);
+updateTimer.unref();

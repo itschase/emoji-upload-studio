@@ -2,9 +2,9 @@
 
 A local dashboard for preparing large emoji uploads. Import PNG and GIF images, edit each image's name, prioritized tags, category, license, and description, then start a queue of any size. A small Tampermonkey worker uses the signed-in [Emoji.gg submission page](https://emoji.gg/submit) to send groups of up to ten, respecting the site's form limit. The studio tracks results and resumes from its saved position.
 
-The dashboard is the working view. The Emoji.gg worker tab stays open in the background. On the Emoji.gg upload page, the worker shows a small status panel with submitted, queued, and failed counts, a pause or resume control, and an **Open Upload Studio ↗** link that opens the dashboard in a new tab.
+The dashboard is the working view. The Emoji.gg worker tab stays open in the background. On the Emoji.gg upload page, the worker shows a small status panel with submitted, queued, and failed counts, a pause or resume control, and an **Open Upload Studio ↗** link that opens the dashboard in a new tab. Both parts are maintained in this repository: Tampermonkey runs the worker in the browser, while Node.js runs the local dashboard and file queue.
 
-If an older Upload Studio worker is also installed, disable it before using this release. While the older local server is active, this worker steps aside so it does not display a second, misleading pairing panel or compete for the same queue.
+If **Emoji.gg Local Upload Queue** 0.2.x is also installed, disable or remove it. Keep only **Emoji.gg Upload Studio Worker** enabled; the older script can prevent new worker tabs from connecting.
 
 ## Why this exists
 
@@ -19,13 +19,15 @@ Emoji.gg's form accepts ten images per submission. Preparing hundreds or thousan
 
 ## Installation
 
-1. Download or clone this repository.
+1. Clone this repository with Git. Automatic Studio updates require a clean checkout of the official repository; a downloaded ZIP works but cannot update itself.
 2. Copy `config.example.json` to `config.local.json` and set `root` to the folder where the studio should store image packs. You can instead set `EMOJI_QUEUE_ROOT` in your environment. The root is never uploaded as a whole; only queued image files are sent to Emoji.gg.
 3. On Windows, double-click **Start Studio.cmd**. It starts the local server if needed and opens the dashboard in your browser. **Studio Control.cmd** provides Start, Stop, Restart, and Status choices. Alternatively use `npm start`, `npm stop`, `npm restart`, and `npm run status` in a terminal. Stop lets active batches finish before the server closes; restart waits for that shutdown and then opens the Studio again.
 4. The default dashboard address is **http://127.0.0.1:43861/**. The dashboard header shows its actual port and configured image folder, so you can tell which local instance you opened. Keep the server running while uploading.
 5. [Install the Upload Studio Worker from Greasy Fork](https://greasyfork.org/en/scripts/605370-emoji-gg-upload-studio-worker) in Tampermonkey, then open **https://emoji.gg/submit** while signed in. A **Local upload queue** panel appears in the lower left. Click **Open Upload Studio ↗** there whenever you want to open the dashboard in a new tab. The worker pairs automatically while the studio is open. Use **Pair worker** in the studio to reopen the 60-second pairing window if necessary.
 
-If the panel does not appear, confirm Tampermonkey is enabled and that you are on the Emoji.gg submission page. If the link opens an unavailable page, start the local server with `npm start`. The Tampermonkey script can update from this repository's raw `uploader.user.js` file; reload existing Emoji.gg tabs after an update.
+If the panel does not appear, confirm Tampermonkey is enabled and that you are on the Emoji.gg submission page. If the link opens an unavailable page, start the local server with `npm start`. The worker's `@updateURL` and `@downloadURL` point to this repository's raw `uploader.user.js`; Tampermonkey checks it on its own schedule when the installed script has a newer `@version`. Reload existing Emoji.gg tabs after an update so they run the new code. The Studio cannot install or update the Tampermonkey script itself.
+
+The local Studio checks the official GitHub repository when you start it and every 15 minutes while it is open. It installs a clean fast-forward update while the queue is idle or paused, then restarts the local server. During active uploads, it waits for a pause so no batch is interrupted. Local source edits and non-Git copies are left alone. Your queue and manifests stay in the configured image folder and are not replaced by code updates. The dashboard header displays the running Studio version.
 
 If an older Studio server is already using the same port, the launcher reports it instead of opening a misleading dashboard. Finish or safely pause that queue before switching server versions; updating only the userscript does not update the server.
 

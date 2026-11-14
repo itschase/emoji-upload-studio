@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.4.1
+// @version      0.4.2
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
-// @match        https://emoji.gg/submit
-// @match        https://emoji.gg/submit/sticker
+// @match        https://emoji.gg/submit*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -18,6 +17,7 @@
 // ==/UserScript==
 (() => {
   'use strict';
+  if(!['/submit','/submit/sticker'].includes(location.pathname))return;
   const base = 'http://127.0.0.1:43861';
   let token = GM_getValue('queueToken','');
   const clientId=new URLSearchParams(location.search).get('upload_studio_worker')||sessionStorage.getItem('uploadStudioClientId')||crypto.randomUUID();
@@ -99,7 +99,7 @@
     if(busy||legacyMode)return;busy=true;
     try{
       if(!token){token=await pair();GM_setValue('queueToken',token);say('paired with local studio');}
-      const hello=await request('hello',{version:'0.4.0',clientId});workerSession=hello.session;
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.4.2',clientId});workerSession=hello.session;
       for(let i=0;i<hello.spawn;i++)GM_openInTab(`https://emoji.gg/submit?upload_studio_worker=${crypto.randomUUID()}`,{active:false,insert:true});
       const status=await request('status');showQueue(status);if(!status.running||status.paused){say(status.paused?'paused':'idle');return;}
       if(location.pathname==='/submit/sticker'){location.href='/submit';return;}
