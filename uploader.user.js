@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.5.0
+// @version      0.5.1
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -23,6 +23,8 @@
   const clientId=new URLSearchParams(location.search).get('upload_studio_worker')||crypto.randomUUID();
   const workerUrl=pathname=>`${pathname}?upload_studio_worker=${encodeURIComponent(clientId)}`;
   let workerSession='';
+  let workerStage='idle',progressAt=Date.now();
+  function setStage(value){workerStage=value;progressAt=Date.now();say(value);}
   const badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;z-index:2147483647;bottom:12px;left:12px;background:#111;color:#eee;border:1px solid #555;padding:7px 10px;border-radius:7px;font:12px system-ui;max-width:360px';
   const statusText=document.createElement('span');statusText.textContent='Local upload queue: checking';
@@ -64,17 +66,19 @@
     return accepted;
   }
   async function upload(batch) {
+    setStage(`fetching ${batch.items.length} files`);
     const files=[];const byHash=new Map();
     for(let i=0;i<batch.items.length;i++) { const item=batch.items[i]; const blob=await request(`file?batch=${encodeURIComponent(batch.id)}&index=${i}` ,undefined,'blob'); const file=new File([blob],item.filename,{type:/\.gif$/i.test(item.filename)?'image/gif':'image/png'}); files.push(file); byHash.set(await digest(file),item); }
-    const input=await wait(()=>document.querySelector('#media-upload'));
+    setStage('loading upload form');const input=await wait(()=>document.querySelector('#media-upload'));
     const transfer=new DataTransfer(); files.forEach(file=>transfer.items.add(file)); input.files=transfer.files; input.dispatchEvent(new Event('change',{bubbles:true}));
-    await wait(()=>document.querySelectorAll('.emojis-form').length===files.length && [...document.querySelectorAll('.emojis-form img[src^="blob:"]')].length===files.length,30000);
+    setStage('waiting for previews');await wait(()=>document.querySelectorAll('.emojis-form').length===files.length && [...document.querySelectorAll('.emojis-form img[src^="blob:"]')].length===files.length,30000);
     const forms=[...document.querySelectorAll('.emojis-form')];
     const ordered=[];
     for(const form of forms){const src=form.querySelector('img[src^="blob:"]')?.src;if(!src)throw new Error('Missing preview image');const preview=await fetch(src).then(r=>r.blob());const item=byHash.get(await digest(preview));if(!item)throw new Error('Preview could not be matched to local image');ordered.push(item);}
     if(new Set(ordered).size!==files.length)throw new Error('Duplicate preview mapping');
     for(let i=0;i<forms.length;i++){
       const form=forms[i],item=ordered[i];
+      setStage(`filling item ${i+1}/${forms.length}`);
       setValue(form.querySelector('input[name="names[]"]'),item.title);
       form.querySelector('select[name="categories[]"]').value=item.category_value;form.querySelector('select[name="categories[]"]').dispatchEvent(new Event('change',{bubbles:true}));
       const license=form.querySelector('select[name="licenses[]"]');license.value=item.license==='CC BY 4.0'?'1':'0';license.dispatchEvent(new Event('change',{bubbles:true}));
@@ -83,10 +87,12 @@
       say(`item ${i+1}/${forms.length}: ${accepted.length} accepted tags`);
       if(i<forms.length-1){const next=[...form.querySelectorAll('button')].find(x=>x.textContent.trim()==='Next');if(!next)throw new Error(`Next button missing at item ${i+1}`);next.click();}
     }
-    const finish=document.querySelector('.finish-forms');if(!finish)throw new Error('Finish button missing');finish.click();
+    setStage('finishing metadata');const finish=document.querySelector('.finish-forms');if(!finish)throw new Error('Finish button missing');finish.click();
     await wait(()=>{const x=document.querySelector('#final-submit');return x&&x.offsetParent!==null&&x},15000);
+    setStage('submitting batch');
     document.querySelector('#final-submit').click();
     batch.submittedToSite = true;
+    setStage('waiting for submission results');
     await wait(()=>document.querySelectorAll('.list-group-item strong').length===files.length || document.querySelector('.upload-error:not([style*="display: none"])'),120000);
     const results=[...document.querySelectorAll('.list-group-item')].filter(e=>e.querySelector('strong'));
     if(results.length!==files.length)throw new Error(`Submission outcome uncertain: ${results.length}/${files.length} rows`);
@@ -94,11 +100,12 @@
     const resultByItem=new Map(results.map((el,i)=>[ordered[i],{status:el.querySelector('.badge.bg-success')?'submitted':'retry',note:el.innerText.slice(-180)}]));
     return batch.items.map(item=>resultByItem.get(item));
   }
+  function withTimeout(promise,timeout){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error(`Worker watchdog stopped a stalled batch after ${Math.round(timeout/1000)} seconds`)),timeout);promise.then(value=>{clearTimeout(timer);resolve(value)},error=>{clearTimeout(timer);reject(error)})})}
   let busy=false,legacyMode=false,helloPromise=null;
   async function announce(){
     if(helloPromise)return helloPromise;
     helloPromise=(async()=>{
-      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.5.0',heartbeat:true,clientId});
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.5.1',heartbeat:true,clientId,stage:workerStage,progressAt});
       workerSession=hello.session;
       for(const id of hello.spawnIds||[])GM_openInTab(`https://emoji.gg/submit?upload_studio_worker=${encodeURIComponent(id)}`,{active:false,insert:true});
       return hello;
@@ -113,12 +120,12 @@
       const status=await request('status');showQueue(status);if(!status.running||status.paused){say(status.paused?'paused':'idle');return;}
       if(location.pathname==='/submit/sticker'){location.href=workerUrl('/submit');return;}
       if(location.pathname!=='/submit')return;
-      const {batch}=await request('next');if(!batch)return;
-      say(`uploading ${batch.items.length}; ${status.queued} queued`);
-      try{const outcomes=await upload(batch);await request('result',{id:batch.id,outcomes});say(`${outcomes.filter(x=>x.status==='submitted').length}/${outcomes.length} submitted`);location.href=workerUrl('/submit/sticker');}
+      const {batch}=await request('next');if(!batch){setStage('ready for next batch');return;}
+      setStage(`uploading ${batch.items.length}; ${status.queued} queued`);
+      try{const outcomes=await withTimeout(upload(batch),180000);await request('result',{id:batch.id,outcomes});setStage(`${outcomes.filter(x=>x.status==='submitted').length}/${outcomes.length} submitted`);location.href=workerUrl('/submit/sticker');}
       catch(error){
         const status=batch.submittedToSite?'uncertain':'retry';
-        say(`batch ${status}: ${error.message}`);
+        setStage(`batch ${status}: ${error.message}`);
         await request('result',{id:batch.id,outcomes:batch.items.map(()=>({status,note:error.message}))});
         console.error('[Emoji queue]',error);
         location.href=workerUrl('/submit/sticker');

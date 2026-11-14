@@ -34,7 +34,7 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     assert.equal(template.headers.get('content-type'),'text/csv; charset=utf-8');
     assert.match(await template.text(),/"filename","title"/);
     assert.equal(status.protocolVersion,'0.4.0');
-    assert.equal(status.studioVersion,'0.5.0');
+    assert.equal(status.studioVersion,'0.5.1');
     assert.equal(status.root,root);
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aQb8AAAAASUVORK5CYII=','base64');
     const imported=await fetch(base+'/api/import?pack=Sample&filename=test-icon.png',{method:'POST',headers,body:png});
@@ -70,19 +70,19 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.4.2',clientId:crypto.randomUUID()})});
     assert.equal((await fetch(base+'/api/status',{headers}).then(r=>r.json())).workerReady,false,'outdated tab cannot start uploads');
     const firstClientId=crypto.randomUUID();
-    const hello=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.5.0',heartbeat:true,clientId:firstClientId})}).then(r=>r.json());
+    const hello=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.5.1',heartbeat:true,clientId:firstClientId,stage:'ready'})}).then(r=>r.json());
     assert.ok(hello.session);
     const connected=await fetch(base+'/api/status',{headers}).then(r=>r.json());
-    assert.equal(connected.workerTabs.find(w=>w.version==='0.5.0').connected,true);
+    assert.equal(connected.workerTabs.find(w=>w.version==='0.5.1').connected,true);
     assert.equal(connected.readyWorkers,1);
     const idleTabs=await fetch(base+'/api/workers',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({workers:3})}).then(r=>r.json());
     assert.equal(idleTabs.spawnPending,2,'applying tab count while idle prepares missing workers');
-    const idleSpawn=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.5.0',heartbeat:true,clientId:firstClientId})}).then(r=>r.json());
+    const idleSpawn=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.5.1',heartbeat:true,clientId:firstClientId,stage:'ready'})}).then(r=>r.json());
     assert.equal(idleSpawn.spawnIds.length,2);
     assert.equal(new Set(idleSpawn.spawnIds).size,2,'each missing worker receives a unique reserved identity');
     const queued=await fetch(base+'/api/start',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({limit:0,folder:'Sample',workers:3})}).then(r=>r.json());
     assert.equal(queued.queued,1);
-    const spawn=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.5.0',heartbeat:true,clientId:firstClientId})}).then(r=>r.json());
+    const spawn=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.5.1',heartbeat:true,clientId:firstClientId,stage:'ready'})}).then(r=>r.json());
     assert.equal(spawn.spawnIds.length,0,'already dispatched reservations are not duplicated');
     const workerHeaders={...headers,'X-Worker-Session':hello.session};
     const batch=await fetch(base+'/api/next',{headers:workerHeaders}).then(r=>r.json());
@@ -91,7 +91,7 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     assert.equal(result.status,200);
     assert.ok((await fs.stat(path.join(root,'.uploaded-Sample','upload_manifest.csv'))).isFile());
     for(let i=0;i<23;i++)assert.equal((await fetch(base+`/api/import?pack=Parallel&filename=icon-${i}.png`,{method:'POST',headers,body:png})).status,200);
-    const newcomers=await Promise.all(idleSpawn.spawnIds.map(clientId=>fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.5.0',heartbeat:true,clientId})}).then(r=>r.json())));
+    const newcomers=await Promise.all(idleSpawn.spawnIds.map(clientId=>fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.5.1',heartbeat:true,clientId,stage:'ready'})}).then(r=>r.json())));
     const hellos=[hello,...newcomers];
     const multi=await fetch(base+'/api/start',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({limit:0,folder:'Parallel',workers:3})}).then(r=>r.json());
     assert.equal(multi.queued,23);
@@ -112,6 +112,15 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     const final=await fetch(base+'/api/status',{headers}).then(r=>r.json());
     assert.equal(final.done,23);assert.equal(final.leased,0);assert.equal(final.running,false);
     assert.ok((await fs.stat(path.join(root,'.uploaded-Parallel','upload_manifest.csv'))).isFile());
+    assert.equal((await fetch(base+'/api/import?pack=Retry&filename=retry.png',{method:'POST',headers,body:png})).status,200);
+    assert.equal((await fetch(base+'/api/start',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({limit:0,folder:'Retry',workers:3})})).status,200);
+    const firstRetryLease=await fetch(base+'/api/next',{headers:{...headers,'X-Worker-Session':hellos[0].session}}).then(r=>r.json());
+    assert.equal((await fetch(base+'/api/result',{method:'POST',headers:{...headers,'X-Worker-Session':hellos[0].session,'Content-Type':'application/json'},body:JSON.stringify({id:firstRetryLease.batch.id,outcomes:[{status:'retry',note:'explicit site failure'}]})})).status,200);
+    const retryQueued=await fetch(base+'/api/status',{headers}).then(r=>r.json());assert.equal(retryQueued.failed,1);assert.equal(retryQueued.queued,1);assert.equal(retryQueued.running,true);
+    const secondRetryLease=await fetch(base+'/api/next',{headers:{...headers,'X-Worker-Session':hellos[1].session}}).then(r=>r.json());assert.equal(secondRetryLease.batch.items[0].attempt,1);
+    assert.equal((await fetch(base+'/api/result',{method:'POST',headers:{...headers,'X-Worker-Session':hellos[1].session,'Content-Type':'application/json'},body:JSON.stringify({id:secondRetryLease.batch.id,outcomes:[{status:'submitted'}]})})).status,200);
+    const retryFinal=await fetch(base+'/api/status',{headers}).then(r=>r.json());assert.equal(retryFinal.done,1);assert.equal(retryFinal.failed,0);assert.equal(retryFinal.running,false);
+    assert.ok((await fs.stat(path.join(root,'.uploaded-Retry','upload_manifest.csv'))).isFile());
   } finally {
     child.kill();
     await new Promise(resolve=>child.once('exit',resolve));

@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.5.0';
+const STUDIO_VERSION='0.5.1';
 
 let localConfig={};
 try { localConfig=JSON.parse(await fs.readFile(new URL('./config.local.json',import.meta.url),'utf8')); } catch { /* set root through environment instead */ }
@@ -38,11 +38,11 @@ let nextSpawnReconcileAt=0;
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
 function isConnected(worker){return Date.now()-worker.seenAt<30000;}
-function versionAtLeast(value,minimum='0.5.0'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
+function versionAtLeast(value,minimum='0.5.1'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
 function isReady(worker){return isConnected(worker)&&worker.supportsHeartbeat&&versionAtLeast(worker.scriptVersion);}
 function activeWorkers(){return [...workers.values()].filter(isConnected).length;}
 function readyWorkers(){return [...workers.values()].filter(isReady).length;}
-function workerSummaries(){return [...workers.entries()].filter(([id,w])=>isConnected(w)||state.leases.some(lease=>lease.owner===id)).map(([id,w])=>({id:id.slice(0,8),version:w.scriptVersion||'older',connected:isConnected(w),ready:isReady(w),inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0}));}
+function workerSummaries(){return [...workers.entries()].filter(([id,w])=>isConnected(w)||state.leases.some(lease=>lease.owner===id)).map(([id,w])=>({id:id.slice(0,8),version:w.scriptVersion||'older',connected:isConnected(w),ready:isReady(w),inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0,stage:w.stage||'idle',progressAt:w.progressAt||w.seenAt}));}
 function liveLeaseCount(){return state.leases.filter(lease=>isConnected(workers.get(lease.owner)||{seenAt:0})).length;}
 function expireWorkerReservations(){const now=Date.now();for(const [id,reservation] of expectedWorkers)if(reservation.expiresAt<=now)expectedWorkers.delete(id);state.spawnPending=expectedWorkers.size;}
 function reserveMissingWorkers(){expireWorkerReservations();const deficit=Math.max(0,state.workers-readyWorkers()-expectedWorkers.size);for(let i=0;i<deficit;i++)expectedWorkers.set(crypto.randomUUID(),{expiresAt:Date.now()+60000,dispatched:false});state.spawnPending=expectedWorkers.size;return deficit;}
@@ -63,6 +63,7 @@ function parseCsv(text) {
 }
 function csv(rows) { const q=v=>`"${String(v??'').replaceAll('"','""')}"`; return [columns.map(q).join(','),...rows.map(r=>columns.map(k=>q(r[k])).join(','))].join('\r\n')+'\r\n'; }
 async function save() { const temp=STATE_FILE+'.tmp'; const {queued,...small}=state; await fs.writeFile(temp,JSON.stringify({...small,queued:queued.length},null,2)); await fs.rename(temp,STATE_FILE); }
+async function saveQueue(){const temp=QUEUE_FILE+'.tmp';await fs.writeFile(temp,JSON.stringify(state.queued));await fs.rename(temp,QUEUE_FILE);}
 async function updateManifest(items, outcomes) {
   const byFolder=new Map();
   for(let i=0;i<items.length;i++){ const item=items[i]; const group=byFolder.get(item.folder)||[]; group.push([item,outcomes[i]]); byFolder.set(item.folder,group); }
@@ -95,7 +96,7 @@ async function createQueue(limit, folderFilter='', workerCount=1) {
   for(const folder of dirs){
     let rows; try{ rows=parseCsv(await fs.readFile(path.join(ROOT,folder,'upload_manifest.csv'),'utf8')); }catch{continue;}
     for(const row of rows){if(row.upload_status!=='pending')continue; const file=path.join(ROOT,folder,row.filename);
-      try{const stat=await fs.stat(file); if(stat.size>0&&stat.size<=256*1024&&/\.(png|gif)$/i.test(row.filename)){items.push({folder,filename:row.filename,title:row.title,category_value:row.category_value,license:row.license,tags:row.tags,description:row.description});}else skipped.push(`${folder}/${row.filename}: invalid type or size`);}catch{skipped.push(`${folder}/${row.filename}: missing`);}
+      try{const stat=await fs.stat(file); if(stat.size>0&&stat.size<=256*1024&&/\.(png|gif)$/i.test(row.filename)){items.push({folder,filename:row.filename,title:row.title,category_value:row.category_value,license:row.license,tags:row.tags,description:row.description,attempt:0});}else skipped.push(`${folder}/${row.filename}: invalid type or size`);}catch{skipped.push(`${folder}/${row.filename}: missing`);}
       if(limit && items.length>=limit)break;
     }
     if(limit && items.length>=limit)break;
@@ -124,7 +125,7 @@ async function editRow(input){
   if(!row.title.trim()||!row.description.trim())throw new Error('Name and description are required');
   const temp=file+'.queue-tmp';await fs.writeFile(temp,csv(rows));await fs.rename(temp,file);return row;
 }
-function json(res,status,body){const data=JSON.stringify(body);res.writeHead(status,{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data),'Cache-Control':'no-store'});res.end(data);}
+function json(res,status,body){if(res.headersSent||res.writableEnded)return;const data=JSON.stringify(body);res.writeHead(status,{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data),'Cache-Control':'no-store'});res.end(data);}
 async function body(req){let s='';for await(const part of req){s+=part;if(s.length>5*1024*1024)throw new Error('Request too large');}return s?JSON.parse(s):{};}
 async function binary(req){const parts=[];let size=0;for await(const part of req){size+=part.length;if(size>256*1024)throw new Error('Image exceeds 256 KiB');parts.push(part);}return Buffer.concat(parts);}
 function validImageBytes(bytes){return bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))||bytes.subarray(0,6).toString('ascii').startsWith('GIF8');}
@@ -164,7 +165,7 @@ const server=http.createServer(async(req,res)=>{
     if(!auth)return json(res,403,{error:'Invalid queue token'});
     if(u.pathname==='/api/status'){expireWorkerReservations();return json(res,200,{...state,protocolVersion:'0.4.0',studioVersion:STUDIO_VERSION,updateMessage,root:ROOT,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:readyWorkers()>0,activeWorkers:activeWorkers(),readyWorkers:readyWorkers(),expectedWorkers:expectedWorkers.size,workerTabs:workerSummaries()});}
     if(u.pathname==='/api/enable-pairing'&&req.method==='POST'){pairingUntil=Date.now()+60000;return json(res,200,{ok:true,expiresInSeconds:60});}
-    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');expectedWorkers.delete(hello.clientId);let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=String(hello.scriptVersion||'older').slice(0,24);worker.supportsHeartbeat=hello.heartbeat===true;while(readyWorkers()+expectedWorkers.size>state.workers)expectedWorkers.delete(expectedWorkers.keys().next().value);let spawnIds=[];if(isReady(worker)&&Date.now()>=nextSpawnReconcileAt){spawnIds=dispatchWorkerReservations();nextSpawnReconcileAt=Date.now()+5000;}state.spawnPending=expectedWorkers.size;return json(res,200,{ok:true,session:worker.session,spawnIds});});
+    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');expectedWorkers.delete(hello.clientId);let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=String(hello.scriptVersion||'older').slice(0,24);worker.supportsHeartbeat=hello.heartbeat===true;worker.stage=String(hello.stage||'idle').slice(0,80);worker.progressAt=Number(hello.progressAt)||worker.seenAt;while(readyWorkers()+expectedWorkers.size>state.workers)expectedWorkers.delete(expectedWorkers.keys().next().value);let spawnIds=[];if(isReady(worker)&&Date.now()>=nextSpawnReconcileAt){spawnIds=dispatchWorkerReservations();nextSpawnReconcileAt=Date.now()+5000;}state.spawnPending=expectedWorkers.size;return json(res,200,{ok:true,session:worker.session,spawnIds});});
     if(u.pathname==='/api/catalog')return json(res,200,await catalog(Math.max(0,Number(u.searchParams.get('offset')||0)),Math.min(100,Math.max(1,Number(u.searchParams.get('limit')||40))),u.searchParams.get('folder')||'',u.searchParams.get('status')||'pending'));
     if(u.pathname==='/api/import-session'&&req.method==='POST')return json(res,200,await serial(async()=>beginManifestImport(await body(req))));
     if(u.pathname==='/api/import-session/file'&&req.method==='POST')return json(res,200,await serial(()=>stageManifestFile(req,u)));
@@ -200,8 +201,11 @@ const server=http.createServer(async(req,res)=>{
       if(!Array.isArray(result.outcomes)||result.outcomes.length!==lease.items.length)throw new Error('Outcome count mismatch');
       const outcomes=result.outcomes.map(o=>({status:o.status==='submitted'?'submitted':o.status==='retry'?'retry':'uncertain',note:o.status==='submitted'?'':String(o.note||'').slice(0,300)}));
       await updateManifest(lease.items,outcomes);
-      state.done+=outcomes.filter(o=>o.status==='submitted').length;state.failed+=outcomes.filter(o=>o.status!=='submitted').length;
-      state.leases=state.leases.filter(x=>x!==lease);state.message=`${state.done} submitted; ${state.failed} unresolved`;
+      const automaticRetries=[];let doneDelta=0,failedDelta=0;
+      for(let i=0;i<outcomes.length;i++){const outcome=outcomes[i],item=lease.items[i],attempt=Number(item.attempt||0);if(outcome.status==='submitted'){doneDelta++;if(attempt>0)failedDelta--;}else{if(attempt===0)failedDelta++;if(outcome.status==='retry'&&attempt<1)automaticRetries.push({...item,attempt:attempt+1});}}
+      state.done+=doneDelta;state.failed=Math.max(0,state.failed+failedDelta);state.leases=state.leases.filter(x=>x!==lease);
+      if(automaticRetries.length){state.queued.push(...automaticRetries);await saveQueue();}
+      state.message=`${state.done} submitted; ${state.failed} unresolved${automaticRetries.length?`; ${automaticRetries.length} scheduled for one automatic retry`:''}`;
       if(state.cursor>=state.queued.length&&!state.leases.length)state.running=false;await save();return json(res,200,{ok:true});
     });
     json(res,404,{error:'Not found'});
