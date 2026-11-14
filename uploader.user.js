@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.3.3
+// @version      0.3.4
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -110,7 +110,7 @@
         console.error('[Emoji queue]',error);
         location.href='/submit/sticker';
       }
-    }catch(error){if(error.message==='Older Upload Studio server active'&&legacyWorkerVisible()){legacyMode=true;badge.remove();return;}if(/Invalid queue token/.test(error.message)){token='';GM_setValue('queueToken','');workerSession='';}queueText.textContent='';queueButton.style.display='none';say(error.message);}finally{busy=false;}
+    }catch(error){if(legacyWorkerVisible()){legacyMode=true;badge.remove();return;}if(/Invalid queue token/.test(error.message)){token='';GM_setValue('queueToken','');workerSession='';}queueText.textContent='';queueButton.style.display='none';say(error.message);}finally{busy=false;}
   }
   setInterval(tick,2500);tick();
 })();
