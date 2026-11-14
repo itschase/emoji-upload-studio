@@ -1,1 +1,1 @@
-{"name":"emoji-upload-queue","private":true,"type":"module","scripts":{"start":"node server.mjs","test":"node --test"}}
+{"name":"emoji-upload-queue","private":true,"type":"module","scripts":{"start":"node launcher.mjs start","stop":"node launcher.mjs stop","restart":"node launcher.mjs restart","status":"node launcher.mjs status","server":"node server.mjs","test":"node --test"}}

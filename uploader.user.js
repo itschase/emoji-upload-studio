@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.4.0
+// @version      0.4.1
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -34,7 +34,7 @@
   function say(message) { statusText.textContent = `Local upload queue: ${message}`; }
   function showQueue(status){queueText.textContent=`${status.activeWorkers}/${status.workers} tabs · ${status.done} submitted · ${status.queued} queued${status.leased?` · ${status.leased} processing`:''} · ${status.failed} failed`;queueButton.dataset.action=status.paused?'resume':'pause';queueButton.textContent=status.paused?'Resume queue':'Pause after batch';queueButton.style.display=status.running||status.paused&&status.queued?'inline-block':'none';}
   function pair() { return new Promise((resolve,reject)=>GM_xmlhttpRequest({method:'GET',url:`${base}/api/pair`,responseType:'json',headers:{'X-Queue-Pair':'local-userscript'},timeout:10000,onload:r=>r.status===200&&r.response?.token?resolve(r.response.token):reject(new Error(r.status===404?'Older Upload Studio server active':'Waiting for local worker pairing')),onerror:()=>reject(new Error('Local studio unavailable')),ontimeout:()=>reject(new Error('Pairing timed out'))})); }
-  function legacyWorkerVisible(){return [...document.querySelectorAll('div')].some(el=>el!==badge&&el.childNodes.length===1&&el.firstChild?.nodeType===Node.TEXT_NODE&&el.textContent?.startsWith('Local upload queue:'));}
+  function legacyWorker(){return [...document.querySelectorAll('div')].find(el=>el!==badge&&el.childNodes.length===1&&el.firstChild?.nodeType===Node.TEXT_NODE&&el.textContent?.startsWith('Local upload queue:'));}
   function request(route, data, responseType = 'json') {
     return new Promise((resolve, reject) => GM_xmlhttpRequest({
       method: data === undefined ? 'GET' : 'POST', url: `${base}/api/${route}`, responseType,
@@ -114,7 +114,7 @@
         console.error('[Emoji queue]',error);
         location.href='/submit/sticker';
       }
-    }catch(error){if(legacyWorkerVisible()){legacyMode=true;badge.remove();return;}if(/Invalid queue token/.test(error.message)){token='';GM_setValue('queueToken','');workerSession='';}queueText.textContent='';queueButton.style.display='none';say(error.message);}finally{busy=false;}
+    }catch(error){const old=legacyWorker();if(old){old.append(studioLink);legacyMode=true;badge.remove();setInterval(()=>{const current=legacyWorker();if(current)current.append(studioLink);},1000);return;}if(/Invalid queue token/.test(error.message)){token='';GM_setValue('queueToken','');workerSession='';}queueText.textContent='';queueButton.style.display='none';say(error.message);}finally{busy=false;}
   }
   setInterval(tick,2500);tick();
 })();

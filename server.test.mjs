@@ -18,6 +18,15 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     for(let i=0;i<50;i++){try{token=(await fs.readFile(path.join(root,'.upload-queue','token.txt'),'utf8')).trim();const response=await fetch(base+'/api/status',{headers:{'X-Queue-Token':token}});if(response.ok)break;}catch{}await new Promise(r=>setTimeout(r,100));}
     assert.ok(token,'test server did not start');
     const headers={'X-Queue-Token':token};
+    const landing=await fetch(base+'/').then(r=>r.text());
+    const theme=await fetch(base+'/studio.css');
+    const status=await fetch(base+'/api/status',{headers}).then(r=>r.json());
+    assert.match(landing,/Parallel tabs<select id="workers">/);
+    assert.match(landing,/\/studio\.css/);
+    assert.equal(theme.headers.get('content-type'),'text/css; charset=utf-8');
+    assert.match(await theme.text(),/backdrop-filter:blur/);
+    assert.equal(status.protocolVersion,'0.4.0');
+    assert.equal(status.root,root);
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aQb8AAAAASUVORK5CYII=','base64');
     const imported=await fetch(base+'/api/import?pack=Sample&filename=test-icon.png',{method:'POST',headers,body:png});
     assert.equal(imported.status,200,await imported.text().catch(()=>''));

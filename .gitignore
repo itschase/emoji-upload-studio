@@ -2,3 +2,5 @@ config.local.json
 server.pid
 server.out.log
 server.err.log
+.launcher-test/
+.ui-review/

@@ -21,6 +21,7 @@ catch { token = crypto.randomBytes(24).toString('hex'); await fs.writeFile(TOKEN
 let state = { running: false, paused: true, limit: 0, queued: [], cursor: 0, leases: [], workers: 1, spawnPending: 0, done: 0, failed: 0, skipped: 0, message: '' };
 const workers=new Map();
 let pairingUntil=0;
+let shuttingDown=false;
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
 function activeWorkers(){return [...workers.entries()].filter(([id,w])=>Date.now()-w.seenAt<15000||state.leases.some(lease=>lease.owner===id)).length;}
@@ -128,13 +129,14 @@ const server=http.createServer(async(req,res)=>{
     const u=new URL(req.url,'http://localhost');
     if(req.method==='OPTIONS'){res.writeHead(204);return res.end();}
     if(u.pathname==='/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','X-Frame-Options':'DENY','Content-Security-Policy':"frame-ancestors 'none'"});return res.end((await fs.readFile(new URL('./dashboard.html',import.meta.url),'utf8')).replace('__QUEUE_TOKEN__',token));}
+    if(u.pathname==='/studio.css'){res.writeHead(200,{'Content-Type':'text/css; charset=utf-8','Cache-Control':'no-cache'});return res.end(await fs.readFile(new URL('./studio.css',import.meta.url),'utf8'));}
     if(u.pathname==='/uploader.user.js'){const script=await fs.readFile(new URL('./uploader.user.js',import.meta.url),'utf8');res.writeHead(200,{'Content-Type':'text/javascript; charset=utf-8'});return res.end(script);}
     if(u.pathname==='/api/pair'&&req.headers['x-queue-pair']==='local-userscript'&&Date.now()<pairingUntil){pairingUntil=0;res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});return res.end(JSON.stringify({token}));}
     const auth=req.headers['x-queue-token']===token || u.searchParams.get('token')===token;
     if(!auth)return json(res,403,{error:'Invalid queue token'});
-    if(u.pathname==='/api/status')return json(res,200,{...state,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:activeWorkers()>0,activeWorkers:activeWorkers(),workerTabs:workerSummaries()});
+    if(u.pathname==='/api/status')return json(res,200,{...state,protocolVersion:'0.4.0',root:ROOT,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:activeWorkers()>0,activeWorkers:activeWorkers(),workerTabs:workerSummaries()});
     if(u.pathname==='/api/enable-pairing'&&req.method==='POST'){pairingUntil=Date.now()+60000;return json(res,200,{ok:true,expiresInSeconds:60});}
-    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();const spawn=state.running&&state.spawnPending>0?state.spawnPending:0;state.spawnPending=0;return json(res,200,{ok:true,session:worker.session,spawn});});
+    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();const spawn=state.running&&state.spawnPending>0?Math.max(0,state.workers-activeWorkers()):0;state.spawnPending=0;return json(res,200,{ok:true,session:worker.session,spawn});});
     if(u.pathname==='/api/catalog')return json(res,200,await catalog(Math.max(0,Number(u.searchParams.get('offset')||0)),Math.min(100,Math.max(1,Number(u.searchParams.get('limit')||40))),u.searchParams.get('folder')||'',u.searchParams.get('status')||'pending'));
     if(u.pathname==='/api/import'&&req.method==='POST')return json(res,200,await serial(()=>importImage(req,u)));
     if(u.pathname==='/api/edit'&&req.method==='POST')return json(res,200,{item:await serial(async()=>editRow(await body(req)))});
@@ -143,10 +145,11 @@ const server=http.createServer(async(req,res)=>{
       const file=path.join(ROOT,folder,filename);const stat=await fs.stat(file);if(stat.size>256*1024)throw new Error('Preview too large');
       res.writeHead(200,{'Content-Type':/\.gif$/i.test(file)?'image/gif':'image/png','Content-Length':stat.size,'Cache-Control':'no-store'});return createReadStream(file).pipe(res);
     }
-    if(u.pathname==='/api/start'&&req.method==='POST')return await serial(async()=>{const input=await body(req),job=await createQueue(Number(input.limit),String(input.folder||''),Number(input.workers||1));return json(res,200,{queued:job.queued.length,skipped:job.skipped});});
+    if(u.pathname==='/api/start'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');const input=await body(req),job=await createQueue(Number(input.limit),String(input.folder||''),Number(input.workers||1));return json(res,200,{queued:job.queued.length,skipped:job.skipped});});
     if(u.pathname==='/api/workers'&&req.method==='POST')return await serial(async()=>{const input=await body(req),count=Number(input.workers);if(!Number.isInteger(count)||count<1||count>10)throw new Error('Choose 1–10 worker tabs');state.workers=count;state.spawnPending=state.running?Math.max(0,count-activeWorkers()):0;await save();return json(res,200,{workers:count,spawnPending:state.spawnPending});});
     if(u.pathname==='/api/pause'&&req.method==='POST')return await serial(async()=>{state.paused=true;await save();return json(res,200,{ok:true});});
-    if(u.pathname==='/api/resume'&&req.method==='POST')return await serial(async()=>{if(!activeWorkers())throw new Error('Updated worker is not connected');state.paused=false;state.running=state.cursor<state.queued.length||state.leases.length>0;await save();return json(res,200,{ok:true});});
+    if(u.pathname==='/api/resume'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');if(!activeWorkers())throw new Error('Updated worker is not connected');state.paused=false;state.running=state.cursor<state.queued.length||state.leases.length>0;await save();return json(res,200,{ok:true});});
+    if(u.pathname==='/api/shutdown'&&req.method==='POST')return await serial(async()=>{shuttingDown=true;state.paused=true;await save();json(res,200,{ok:true,draining:state.leases.length});const timer=setInterval(()=>{if(!state.leases.length){clearInterval(timer);server.close();}},500);});
     if(u.pathname==='/api/next')return await serial(async()=>{
       const owner=workerOwner(req);if(!owner)return json(res,403,{error:'Updated worker required'});
       if(!state.running||state.paused)return json(res,200,{batch:null});

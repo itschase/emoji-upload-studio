@@ -1,0 +1,42 @@
+:root{color-scheme:dark;font-family:Inter,Segoe UI,system-ui,sans-serif;--glass:rgba(24,29,39,.68);--line:rgba(210,225,255,.14);--text:#f2f5fa;--muted:#a7b2c4;--accent:#a9c5ff}
+*{box-sizing:border-box}
+body{min-height:100vh;background:radial-gradient(ellipse 75% 55% at 8% -18%,#2b3d5b 0,transparent 72%),radial-gradient(ellipse 45% 65% at 100% 15%,#1e2c44 0,transparent 75%),#090b10;color:var(--text);line-height:1.45}
+header{position:relative;top:auto;padding:24px clamp(20px,4vw,52px);background:rgba(13,17,25,.72);border-bottom:1px solid var(--line);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px)}
+header h1{font-size:26px;font-weight:720;letter-spacing:-.035em}
+header .sub{font-size:13px;color:var(--muted)}
+header .connection-info{margin-top:10px;color:#8faad0;font-size:12px;overflow-wrap:anywhere}
+main{max-width:1500px;margin:25px auto;padding:0 clamp(16px,3vw,36px) 56px}
+main>h2{font-size:16px;letter-spacing:.015em;margin:28px 0 11px;color:var(--text);font-weight:680}
+main>.row{background:var(--glass);border:1px solid var(--line);border-radius:5px;padding:18px;gap:12px;box-shadow:0 18px 40px rgba(0,0,0,.18),inset 0 1px rgba(255,255,255,.04);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+main>.row:has(#start){align-items:end}
+main>.row:has(#filter){margin-top:25px}
+main>hr{display:none}
+main>p.small{margin:9px 3px 23px;max-width:960px;line-height:1.55;color:var(--muted)}
+label{color:#d5deeb;font-size:12px;letter-spacing:.01em}
+.row label input,.row label select{display:block;margin-top:5px}
+input,select,textarea{background:rgba(7,10,16,.68);color:var(--text);border:1px solid var(--line);border-radius:4px;min-height:37px;box-sizing:border-box}
+input::placeholder{color:#8492a7}
+input:focus,select:focus,textarea:focus{outline:1px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+button,.button-link{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:37px;padding:7px 11px;background:rgba(52,61,76,.62);color:var(--text);border:1px solid rgba(219,230,255,.17);border-radius:4px;font-weight:600;text-decoration:none;white-space:nowrap;transition:background .15s,border-color .15s,transform .15s}
+button:hover,.button-link:hover{background:rgba(73,86,107,.73);border-color:rgba(222,233,255,.32);transform:translateY(-1px)}
+button.primary{background:rgba(74,108,166,.7);border-color:rgba(166,198,255,.45)}
+button.primary:hover{background:rgba(91,129,190,.85)}
+button:disabled{opacity:.46;transform:none}
+.ui-icon{width:16px;height:16px;flex:none;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round;opacity:.9}
+#workers{width:82px!important;font-weight:700;text-align:center}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:18px}
+.metric{display:flex;flex-direction:column;gap:5px;padding:16px 18px;background:var(--glass);border:1px solid var(--line);border-radius:5px;box-shadow:0 12px 28px #0002,inset 0 1px #ffffff0b;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+.metric span{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em}
+.metric strong{font-size:26px;line-height:1.1;font-variant-numeric:tabular-nums;color:#f5f8ff}
+#status{margin:12px 0 25px;padding:12px 16px;background:rgba(23,32,45,.57);border:1px solid var(--line);border-left:3px solid #83a7e5;border-radius:4px;color:#dce7f5;line-height:1.6;font-size:13px;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+.cards{grid-template-columns:repeat(auto-fill,minmax(min(100%,390px),1fr));gap:14px}
+.card{background:var(--glass);border:1px solid var(--line);border-radius:5px;padding:16px;box-shadow:0 12px 32px #0002;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+.head{margin-bottom:11px}
+.head img{width:70px;height:70px;background:rgba(5,7,11,.66);border:1px solid var(--line);border-radius:3px}
+.head strong{font-size:14px;color:var(--text)}
+.field{margin-top:5px}
+.card textarea{min-height:95px}
+.card .row{margin-top:8px}
+.pager{margin:17px 0;color:var(--muted)}
+.notice{color:#f1cb82}.ok{color:#9cdbbc}
+@media(max-width:700px){header{padding:18px}header h1{font-size:21px}main{margin-top:16px}main>.row{padding:14px}main>.row>label{width:100%}main>.row input{max-width:100%;width:100%}#workers{width:100%!important}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.cards{grid-template-columns:1fr}}
