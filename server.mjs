@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.5.3';
+const STUDIO_VERSION='0.5.4';
 const MAX_AUTOMATIC_RETRIES=3;
 
 let localConfig={};
@@ -39,7 +39,7 @@ let nextSpawnReconcileAt=0;
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
 function isConnected(worker){return Date.now()-worker.seenAt<30000;}
-function versionAtLeast(value,minimum='0.5.3'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
+function versionAtLeast(value,minimum='0.5.4'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
 function isReady(worker){return isConnected(worker)&&worker.supportsHeartbeat&&versionAtLeast(worker.scriptVersion);}
 function activeWorkers(){return [...workers.values()].filter(isConnected).length;}
 function readyWorkers(){return [...workers.values()].filter(isReady).length;}
@@ -93,15 +93,14 @@ async function createQueue(limit, folderFilter='', workerCount=1) {
   if(state.running && (state.cursor<state.queued.length||state.leases.length))throw new Error('Finish the current queue before starting another');
   if(state.leases.length)throw new Error('A batch is already in flight');
   const dirs=(await fs.readdir(ROOT,{withFileTypes:true})).filter(d=>d.isDirectory()&&!d.name.startsWith('.')&&(!folderFilter||d.name===folderFilter)).map(d=>d.name).sort();
-  const items=[]; const skipped=[];
+  const retryItems=[];const pendingItems=[];const skipped=[];
   for(const folder of dirs){
     let rows; try{ rows=parseCsv(await fs.readFile(path.join(ROOT,folder,'upload_manifest.csv'),'utf8')); }catch{continue;}
-    for(const row of rows){if(row.upload_status!=='pending')continue; const file=path.join(ROOT,folder,row.filename);
-      try{const stat=await fs.stat(file); if(stat.size>0&&stat.size<=256*1024&&/\.(png|gif)$/i.test(row.filename)){items.push({folder,filename:row.filename,title:row.title,category_value:row.category_value,license:row.license,tags:row.tags,description:row.description,attempt:0});}else skipped.push(`${folder}/${row.filename}: invalid type or size`);}catch{skipped.push(`${folder}/${row.filename}: missing`);}
-      if(limit && items.length>=limit)break;
+    for(const row of rows){if(row.upload_status!=='pending'&&row.upload_status!=='retry')continue; const file=path.join(ROOT,folder,row.filename);
+      try{const stat=await fs.stat(file);if(stat.size>0&&stat.size<=256*1024&&/\.(png|gif)$/i.test(row.filename)){const item={folder,filename:row.filename,title:row.title,category_value:row.category_value,license:row.license,tags:row.tags,description:row.description,attempt:0};(row.upload_status==='retry'?retryItems:pendingItems).push(item);}else skipped.push(`${folder}/${row.filename}: invalid type or size`);}catch{skipped.push(`${folder}/${row.filename}: missing`);}
     }
-    if(limit && items.length>=limit)break;
   }
+  const candidates=[...retryItems,...pendingItems],items=limit?candidates.slice(0,limit):candidates;
   const temp=QUEUE_FILE+'.tmp';await fs.writeFile(temp,JSON.stringify(items));await fs.rename(temp,QUEUE_FILE);
   state={running:items.length>0,paused:false,limit,queued:items,cursor:0,leases:[],workers:workerCount,spawnPending:Math.max(0,workerCount-readyWorkers()),done:0,failed:0,skipped:skipped.length,message:skipped.slice(0,5).join('; ')};
   await save(); return state;
