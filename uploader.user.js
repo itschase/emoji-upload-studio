@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.3.2
+// @version      0.3.3
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -29,8 +29,9 @@
   queueButton.addEventListener('click',async()=>{try{await request(queueButton.dataset.action,{});say(queueButton.dataset.action==='pause'?'pausing after this batch':'resuming queue');}catch(error){say(error.message);}});
   badge.append(statusText,studioLink,queueText,queueButton);document.body.append(badge);
   function say(message) { statusText.textContent = `Local upload queue: ${message}`; }
-  function showQueue(status){queueText.textContent=`${status.done} submitted · ${status.queued} queued · ${status.failed} failed`;queueButton.dataset.action=status.paused?'resume':'pause';queueButton.textContent=status.paused?'Resume queue':'Pause after batch';queueButton.style.display=status.running||status.paused&&status.queued?'inline-block':'none';}
-  function pair() { return new Promise((resolve,reject)=>GM_xmlhttpRequest({method:'GET',url:`${base}/api/pair`,responseType:'json',headers:{'X-Queue-Pair':'local-userscript'},timeout:10000,onload:r=>r.status===200&&r.response?.token?resolve(r.response.token):reject(new Error(r.status===404?'An older studio server is running; open it for queue stats':'Open Upload Studio to pair this worker')),onerror:()=>reject(new Error('Local studio unavailable')),ontimeout:()=>reject(new Error('Pairing timed out'))})); }
+  function showQueue(status){queueText.textContent=`${status.done} submitted · ${status.queued} queued${status.leased?` · ${status.leased} processing`:''} · ${status.failed} failed`;queueButton.dataset.action=status.paused?'resume':'pause';queueButton.textContent=status.paused?'Resume queue':'Pause after batch';queueButton.style.display=status.running||status.paused&&status.queued?'inline-block':'none';}
+  function pair() { return new Promise((resolve,reject)=>GM_xmlhttpRequest({method:'GET',url:`${base}/api/pair`,responseType:'json',headers:{'X-Queue-Pair':'local-userscript'},timeout:10000,onload:r=>r.status===200&&r.response?.token?resolve(r.response.token):reject(new Error(r.status===404?'Older Upload Studio server active':'Waiting for local worker pairing')),onerror:()=>reject(new Error('Local studio unavailable')),ontimeout:()=>reject(new Error('Pairing timed out'))})); }
+  function legacyWorkerVisible(){return [...document.querySelectorAll('div')].some(el=>el!==badge&&el.childNodes.length===1&&el.firstChild?.nodeType===Node.TEXT_NODE&&el.textContent?.startsWith('Local upload queue:'));}
   function request(route, data, responseType = 'json') {
     return new Promise((resolve, reject) => GM_xmlhttpRequest({
       method: data === undefined ? 'GET' : 'POST', url: `${base}/api/${route}`, responseType,
@@ -90,9 +91,9 @@
     const resultByItem=new Map(results.map((el,i)=>[ordered[i],{status:el.querySelector('.badge.bg-success')?'submitted':'retry',note:el.innerText.slice(-180)}]));
     return batch.items.map(item=>resultByItem.get(item));
   }
-  let busy=false;
+  let busy=false,legacyMode=false;
   async function tick() {
-    if(busy)return;busy=true;
+    if(busy||legacyMode)return;busy=true;
     try{
       if(!token){token=await pair();GM_setValue('queueToken',token);say('paired with local studio');}
       workerSession=(await request('hello',{version:'0.3.0'})).session;
@@ -109,7 +110,7 @@
         console.error('[Emoji queue]',error);
         location.href='/submit/sticker';
       }
-    }catch(error){if(/Invalid queue token/.test(error.message)){token='';GM_setValue('queueToken','');workerSession='';}queueText.textContent='';queueButton.style.display='none';say(error.message);}finally{busy=false;}
+    }catch(error){if(error.message==='Older Upload Studio server active'&&legacyWorkerVisible()){legacyMode=true;badge.remove();return;}if(/Invalid queue token/.test(error.message)){token='';GM_setValue('queueToken','');workerSession='';}queueText.textContent='';queueButton.style.display='none';say(error.message);}finally{busy=false;}
   }
   setInterval(tick,2500);tick();
 })();

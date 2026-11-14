@@ -4,6 +4,8 @@ A local dashboard for preparing large emoji uploads. Import PNG and GIF images, 
 
 The dashboard is the working view. The Emoji.gg worker tab stays open in the background. On the Emoji.gg upload page, the worker shows a small status panel with submitted, queued, and failed counts, a pause or resume control, and an **Open Upload Studio ↗** link that opens the dashboard in a new tab.
 
+If an older Upload Studio worker is also installed, disable it before using this release. While the older local server is active, this worker steps aside so it does not display a second, misleading pairing panel or compete for the same queue.
+
 ## Why this exists
 
 Emoji.gg's form accepts ten images per submission. Preparing hundreds or thousands by hand requires repeating file selection, metadata entry, and status tracking. This tool stages everything locally first and performs those repeated steps while preserving per-image results. It does not bypass the site's upload limit or use an undocumented upload API.
