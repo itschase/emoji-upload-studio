@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.4.4';
+const STUDIO_VERSION='0.4.5';
 
 let localConfig={};
 try { localConfig=JSON.parse(await fs.readFile(new URL('./config.local.json',import.meta.url),'utf8')); } catch { /* set root through environment instead */ }
@@ -29,6 +29,7 @@ let pairingUntil=0;
 let shuttingDown=false;
 let checkingUpdate=false;
 let updateMessage='';
+let nextSpawnReconcileAt=0;
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
 function isConnected(worker){return Date.now()-worker.seenAt<15000;}
@@ -145,7 +146,7 @@ const server=http.createServer(async(req,res)=>{
     if(!auth)return json(res,403,{error:'Invalid queue token'});
     if(u.pathname==='/api/status')return json(res,200,{...state,protocolVersion:'0.4.0',studioVersion:STUDIO_VERSION,updateMessage,root:ROOT,queued:state.queued.length-state.cursor,leased:state.leases.reduce((n,x)=>n+x.items.length,0),workerReady:readyWorkers()>0,activeWorkers:activeWorkers(),readyWorkers:readyWorkers(),workerTabs:workerSummaries()});
     if(u.pathname==='/api/enable-pairing'&&req.method==='POST'){pairingUntil=Date.now()+60000;return json(res,200,{ok:true,expiresInSeconds:60});}
-    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=String(hello.scriptVersion||'older').slice(0,24);worker.supportsHeartbeat=hello.heartbeat===true;const spawn=worker.supportsHeartbeat&&state.spawnPending>0?Math.max(0,state.workers-readyWorkers()):0;if(worker.supportsHeartbeat)state.spawnPending=0;return json(res,200,{ok:true,session:worker.session,spawn});});
+    if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');let worker=workers.get(hello.clientId);if(!worker){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0};workers.set(hello.clientId,worker);}worker.seenAt=Date.now();worker.scriptVersion=String(hello.scriptVersion||'older').slice(0,24);worker.supportsHeartbeat=hello.heartbeat===true;if(worker.supportsHeartbeat&&state.spawnPending===0&&Date.now()>=nextSpawnReconcileAt){state.spawnPending=Math.max(0,state.workers-readyWorkers());nextSpawnReconcileAt=Date.now()+20000;}const spawn=worker.supportsHeartbeat?state.spawnPending:0;if(spawn)state.spawnPending=0;return json(res,200,{ok:true,session:worker.session,spawn});});
     if(u.pathname==='/api/catalog')return json(res,200,await catalog(Math.max(0,Number(u.searchParams.get('offset')||0)),Math.min(100,Math.max(1,Number(u.searchParams.get('limit')||40))),u.searchParams.get('folder')||'',u.searchParams.get('status')||'pending'));
     if(u.pathname==='/api/import'&&req.method==='POST')return json(res,200,await serial(()=>importImage(req,u)));
     if(u.pathname==='/api/edit'&&req.method==='POST')return json(res,200,{item:await serial(async()=>editRow(await body(req)))});
@@ -155,7 +156,7 @@ const server=http.createServer(async(req,res)=>{
       res.writeHead(200,{'Content-Type':/\.gif$/i.test(file)?'image/gif':'image/png','Content-Length':stat.size,'Cache-Control':'no-store'});return createReadStream(file).pipe(res);
     }
     if(u.pathname==='/api/start'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');const input=await body(req),job=await createQueue(Number(input.limit),String(input.folder||''),Number(input.workers||1));return json(res,200,{queued:job.queued.length,skipped:job.skipped});});
-    if(u.pathname==='/api/workers'&&req.method==='POST')return await serial(async()=>{const input=await body(req),count=Number(input.workers);if(!Number.isInteger(count)||count<1||count>10)throw new Error('Choose 1–10 worker tabs');state.workers=count;state.spawnPending=Math.max(0,count-readyWorkers());await save();return json(res,200,{workers:count,spawnPending:state.spawnPending,openFirst:readyWorkers()===0});});
+    if(u.pathname==='/api/workers'&&req.method==='POST')return await serial(async()=>{const input=await body(req),count=Number(input.workers);if(!Number.isInteger(count)||count<1||count>10)throw new Error('Choose 1–10 worker tabs');state.workers=count;state.spawnPending=Math.max(0,count-readyWorkers());nextSpawnReconcileAt=Date.now()+20000;await save();return json(res,200,{workers:count,spawnPending:state.spawnPending,openFirst:readyWorkers()===0});});
     if(u.pathname==='/api/pause'&&req.method==='POST')return await serial(async()=>{state.paused=true;await save();return json(res,200,{ok:true});});
     if(u.pathname==='/api/resume'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');if(!readyWorkers())throw new Error('Worker 0.4.3 or newer is required before resuming');state.paused=false;state.running=state.cursor<state.queued.length||state.leases.length>0;await save();return json(res,200,{ok:true});});
     if(u.pathname==='/api/shutdown'&&req.method==='POST')return await serial(async()=>{shuttingDown=true;state.paused=true;await save();json(res,200,{ok:true,draining:state.leases.length});const timer=setInterval(()=>{if(!state.leases.length){clearInterval(timer);server.close();}},500);});
@@ -213,6 +214,8 @@ async function recoverDisconnectedBatches(){
     state.leases=state.leases.filter(lease=>!stale.includes(lease));
     state.failed+=stale.reduce((sum,lease)=>sum+lease.items.length,0);
     state.message=`${state.failed} unresolved; ${stale.length} disconnected batches need review`;
+    state.spawnPending=Math.max(state.spawnPending,Math.max(0,state.workers-readyWorkers()));
+    nextSpawnReconcileAt=0;
     if(state.cursor>=state.queued.length&&!state.leases.length)state.running=false;
     await save();
   }).catch(error=>console.error('Could not recover disconnected batch:',error));
