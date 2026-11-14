@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.4.3
+// @version      0.4.4
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -98,7 +98,7 @@
   async function announce(){
     if(helloPromise)return helloPromise;
     helloPromise=(async()=>{
-      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.4.3',heartbeat:true,clientId});
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.4.4',heartbeat:true,clientId});
       workerSession=hello.session;
       for(let i=0;i<hello.spawn;i++)GM_openInTab(`https://emoji.gg/submit?upload_studio_worker=${crypto.randomUUID()}`,{active:false,insert:true});
       return hello;
