@@ -21,7 +21,7 @@ Emoji.gg's form accepts ten images per submission. Preparing hundreds or thousan
 2. Copy `config.example.json` to `config.local.json` and set `root` to the folder where the studio should store image packs. You can instead set `EMOJI_QUEUE_ROOT` in your environment. The root is never uploaded as a whole; only queued image files are sent to Emoji.gg.
 3. Run `npm start` in this directory.
 4. Open **http://127.0.0.1:43861/** in your browser. This is the dashboard, served only on your computer. Keep the server running while uploading.
-5. Install `uploader.user.js` in Tampermonkey, then open **https://emoji.gg/submit** while signed in. A **Local upload queue** panel appears in the lower left. Click **Open Upload Studio ↗** there whenever you want to open the dashboard in a new tab. The worker pairs automatically while the studio is open. Use **Pair worker** in the studio to reopen the 60-second pairing window if necessary.
+5. [Install the Upload Studio Worker from Greasy Fork](https://greasyfork.org/en/scripts/605370-emoji-gg-upload-studio-worker) in Tampermonkey, then open **https://emoji.gg/submit** while signed in. A **Local upload queue** panel appears in the lower left. Click **Open Upload Studio ↗** there whenever you want to open the dashboard in a new tab. The worker pairs automatically while the studio is open. Use **Pair worker** in the studio to reopen the 60-second pairing window if necessary.
 
 If the panel does not appear, confirm Tampermonkey is enabled and that you are on the Emoji.gg submission page. If the link opens an unavailable page, start the local server with `npm start`. The Tampermonkey script can update from this repository's raw `uploader.user.js` file; reload existing Emoji.gg tabs after an update.
 
