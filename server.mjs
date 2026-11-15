@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.6.11';
+const STUDIO_VERSION='0.6.12';
 const MAX_AUTOMATIC_RETRIES=3;
 const MAX_UNCERTAIN_BEFORE_PAUSE=10;
 
@@ -242,8 +242,8 @@ const server=http.createServer(async(req,res)=>{
     if(u.pathname==='/api/shutdown'&&req.method==='POST')return await serial(async()=>{shuttingDown=true;state.paused=true;await save();json(res,200,{ok:true,draining:state.leases.length});const timer=setInterval(()=>{if(!state.leases.length){clearInterval(timer);server.close();}},500);});
     if(u.pathname==='/api/next')return await serial(async()=>{
       const owner=workerOwner(req);if(!owner||!workers.get(owner)?.supportsHeartbeat)return json(res,403,{error:'Worker 0.4.3 or newer required'});
-      if(!state.running||state.paused)return json(res,200,{batch:null});
       const existing=state.leases.find(x=>x.owner===owner);if(existing)return json(res,200,{batch:null,blocked:{id:existing.id,itemCount:existing.items.length,issuedAt:existing.issuedAt}});
+      if(!state.running||state.paused)return json(res,200,{batch:null});
       if(state.leases.length>=state.workers||state.cursor>=state.queued.length)return json(res,200,{batch:null});
       const lease={id:crypto.randomUUID(),owner,issuedAt:Date.now(),items:state.queued.slice(state.cursor,state.cursor+10)};state.cursor+=lease.items.length;state.leases.push(lease);await save();return json(res,200,{batch:lease});
     });
