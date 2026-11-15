@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.6.1
+// @version      0.6.2
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -20,7 +20,7 @@
   'use strict';
   if(!['/submit','/submit/sticker'].includes(location.pathname))return;
   if(document.documentElement.dataset.emojiUploadStudioWorker)return;
-  document.documentElement.dataset.emojiUploadStudioWorker='0.6.1';
+  document.documentElement.dataset.emojiUploadStudioWorker='0.6.2';
   const base = 'http://127.0.0.1:43861';
   let token = GM_getValue('queueToken','');
   let installationId=GM_getValue('installationId','');if(!/^[0-9a-f-]{36}$/i.test(installationId)){installationId=crypto.randomUUID();GM_setValue('installationId',installationId);}
@@ -118,7 +118,7 @@
   async function announce(){
     if(helloPromise)return helloPromise;
     helloPromise=(async()=>{
-      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.6.1',heartbeat:true,clientId,installationId,pageInstanceId,stage:workerStage,progressAt});
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.6.2',heartbeat:true,clientId,installationId,pageInstanceId,stage:workerStage,progressAt});
       if(hello.reloadRequired){const key=`uploadStudioReloaded:${hello.minimumVersion}`;if(!sessionStorage.getItem(key)){sessionStorage.setItem(key,'1');setStage(`updating worker to ${hello.minimumVersion}`);location.reload();await new Promise(()=>{});}throw new Error(`Worker ${hello.minimumVersion} is required; update Tampermonkey and reload`);}
       if(hello.duplicate){duplicateMode=true;workerSession='';setStage(hello.activeLease?'waiting for active page instance':'duplicate worker copy inactive');return hello;}
       duplicateMode=false;

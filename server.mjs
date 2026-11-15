@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.6.1';
+const STUDIO_VERSION='0.6.2';
 const MAX_AUTOMATIC_RETRIES=3;
 const MAX_UNCERTAIN_BEFORE_PAUSE=10;
 
@@ -42,7 +42,7 @@ let nextSpawnReconcileAt=0;
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
 function isConnected(worker){return Date.now()-worker.seenAt<30000;}
-function versionAtLeast(value,minimum='0.6.1'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
+function versionAtLeast(value,minimum='0.6.2'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
 function isReady(worker){return isConnected(worker)&&worker.supportsHeartbeat&&versionAtLeast(worker.scriptVersion);}
 function activeWorkers(){return [...workers.values()].filter(isConnected).length;}
 function readyWorkers(){return [...workers.values()].filter(isReady).length;}
@@ -130,6 +130,7 @@ async function editRow(input){
   if(!row.title.trim()||!row.description.trim())throw new Error('Name and description are required');
   const temp=file+'.queue-tmp';await fs.writeFile(temp,csv(rows));await fs.rename(temp,file);return row;
 }
+async function requeueUncertain(input){if(state.running&&(state.cursor<state.queued.length||state.leases.length))throw new Error('Pause and finish active batches before requeueing uncertain items');if(state.leases.length)throw new Error('An upload batch is still in flight');const folderFilter=String(input.folder||''),filename=String(input.filename||'');if(folderFilter&&!safeLeaf(folderFilter)||filename&&!safeLeaf(filename))throw new Error('Invalid item path');const dirs=(await fs.readdir(ROOT,{withFileTypes:true})).filter(entry=>entry.isDirectory()&&!entry.name.startsWith('.')&&(!folderFilter||entry.name===folderFilter));let changed=0,files=0;for(const dir of dirs){const manifest=path.join(ROOT,dir.name,'upload_manifest.csv');let content,rows;try{content=await fs.readFile(manifest,'utf8');rows=parseCsv(content);}catch{continue;}let fileChanged=0;for(const row of rows){if(row.upload_status!=='uncertain'||filename&&row.filename!==filename)continue;const previous=String(row.upload_notes||'').trim();row.upload_status='retry';row.upload_notes=`Manually returned to retry queue${previous?`; previous: ${previous}`:''}`.slice(0,500);fileChanged++;changed++;}if(!fileChanged)continue;const backup=path.join(ROOT,dir.name,'upload_manifest.before-uncertain-requeue.csv');try{await fs.writeFile(backup,content,{flag:'wx'});}catch(error){if(error.code!=='EEXIST')throw error;}const temp=manifest+'.requeue-tmp';await fs.writeFile(temp,csv(rows));await fs.rename(temp,manifest);files++;if(filename)break;}if(!changed)throw new Error('No matching uncertain entries were found');invalidateManifestCounts();return {changed,files};}
 function json(res,status,body){if(res.headersSent||res.writableEnded)return;const data=JSON.stringify(body);res.writeHead(status,{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data),'Cache-Control':'no-store'});res.end(data);}
 async function body(req){let s='';for await(const part of req){s+=part;if(s.length>5*1024*1024)throw new Error('Request too large');}return s?JSON.parse(s):{};}
 async function binary(req){const parts=[];let size=0;for await(const part of req){size+=part.length;if(size>256*1024)throw new Error('Image exceeds 256 KiB');parts.push(part);}return Buffer.concat(parts);}
@@ -178,6 +179,7 @@ const server=http.createServer(async(req,res)=>{
     if(u.pathname==='/api/import-session/commit'&&req.method==='POST')return json(res,200,await serial(async()=>commitManifestImport((await body(req)).id)));
     if(u.pathname==='/api/import'&&req.method==='POST')return json(res,200,await serial(()=>importImage(req,u)));
     if(u.pathname==='/api/edit'&&req.method==='POST')return json(res,200,{item:await serial(async()=>editRow(await body(req)))});
+    if(u.pathname==='/api/requeue-uncertain'&&req.method==='POST')return json(res,200,await serial(async()=>requeueUncertain(await body(req))));
     if(u.pathname==='/api/preview'){
       const folder=u.searchParams.get('folder')||'',filename=u.searchParams.get('filename')||'';if(!safeLeaf(folder)||!safeLeaf(filename))throw new Error('Invalid item path');
       const file=path.join(ROOT,folder,filename);const stat=await fs.stat(file);if(stat.size>256*1024)throw new Error('Preview too large');
