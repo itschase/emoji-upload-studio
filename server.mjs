@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.6.8';
+const STUDIO_VERSION='0.6.9';
 const MAX_AUTOMATIC_RETRIES=3;
 const MAX_UNCERTAIN_BEFORE_PAUSE=10;
 
@@ -42,7 +42,7 @@ let nextSpawnReconcileAt=0;
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
 function isConnected(worker){return Date.now()-worker.seenAt<30000;}
-function versionAtLeast(value,minimum='0.6.7'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
+function versionAtLeast(value,minimum='0.6.9'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
 function isReady(worker){return isConnected(worker)&&worker.supportsHeartbeat&&versionAtLeast(worker.scriptVersion);}
 function activeWorkers(){return [...workers.values()].filter(isConnected).length;}
 function readyWorkers(){return [...workers.values()].filter(isReady).length;}
@@ -198,12 +198,13 @@ const server=http.createServer(async(req,res)=>{
     if(u.pathname==='/api/enable-pairing'&&req.method==='POST'){pairingUntil=Date.now()+60000;return json(res,200,{ok:true,expiresInSeconds:60});}
     if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{
       const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');
-      const installationId=uuid(hello.installationId)?hello.installationId:`legacy-${hello.clientId}`,pageInstanceId=uuid(hello.pageInstanceId)?hello.pageInstanceId:`legacy-page-${hello.clientId}`,scriptVersion=String(hello.scriptVersion||'older').slice(0,24),reloadRequired=!versionAtLeast(scriptVersion);
+      const installationId=uuid(hello.installationId)?hello.installationId:`legacy-${hello.clientId}`,pageInstanceId=uuid(hello.pageInstanceId)?hello.pageInstanceId:`legacy-page-${hello.clientId}`,pageStartedAt=Number(hello.pageStartedAt)||0,scriptVersion=String(hello.scriptVersion||'older').slice(0,24),reloadRequired=!versionAtLeast(scriptVersion);
       expectedWorkers.delete(hello.clientId);
       let worker=workers.get(hello.clientId);const activeLease=state.leases.find(lease=>lease.owner===hello.clientId),differentInstance=worker?.pageInstanceId&&worker.pageInstanceId!==pageInstanceId;
       if(worker?.installationId&&worker.installationId!==installationId&&isConnected(worker))return json(res,200,{ok:true,duplicate:true,closeAllowed:true,reloadRequired,minimumVersion:STUDIO_VERSION,spawnIds:[]});
-      if(differentInstance&&isReady(worker))return json(res,200,{ok:true,duplicate:true,activeLease:Boolean(activeLease),closeAllowed:!activeLease,retryAfterMs:5000,reloadRequired,minimumVersion:STUDIO_VERSION,spawnIds:[]});
-      if(!worker||worker.installationId!==installationId||differentInstance){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0,installationId,pageInstanceId};workers.set(hello.clientId,worker);}
+      const newerPage=differentInstance&&pageStartedAt>(worker?.pageStartedAt||0);
+      if(differentInstance&&isReady(worker)&&!newerPage)return json(res,200,{ok:true,duplicate:true,activeLease:Boolean(activeLease),closeAllowed:!activeLease,retryAfterMs:5000,reloadRequired,minimumVersion:STUDIO_VERSION,spawnIds:[]});
+      if(!worker||worker.installationId!==installationId||differentInstance){worker={session:crypto.randomBytes(24).toString('hex'),seenAt:0,installationId,pageInstanceId,pageStartedAt};workers.set(hello.clientId,worker);}
       worker.seenAt=Date.now();worker.scriptVersion=scriptVersion;worker.supportsHeartbeat=hello.heartbeat===true;worker.stage=String(hello.stage||'idle').slice(0,80);worker.progressAt=Number(hello.progressAt)||worker.seenAt;
       const connectedOthers=[...workers.entries()].filter(([id,value])=>id!==hello.clientId&&isReady(value)).length;
       if(!activeLease&&connectedOthers>=state.workers){workers.delete(hello.clientId);return json(res,200,{ok:true,retire:true,closeAllowed:true,reloadRequired,minimumVersion:STUDIO_VERSION,spawnIds:[]});}
