@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.6.13';
+const STUDIO_VERSION='0.6.14';
 const MAX_AUTOMATIC_RETRIES=3;
 const MAX_UNCERTAIN_BEFORE_PAUSE=10;
 
