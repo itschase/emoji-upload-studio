@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.5.5
+// @version      0.6.0
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -9,6 +9,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_deleteValue
 // @grant        GM_openInTab
 // @connect      127.0.0.1
 // @updateURL    https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
@@ -19,15 +20,20 @@
   'use strict';
   if(!['/submit','/submit/sticker'].includes(location.pathname))return;
   if(document.documentElement.dataset.emojiUploadStudioWorker)return;
-  document.documentElement.dataset.emojiUploadStudioWorker='0.5.5';
+  document.documentElement.dataset.emojiUploadStudioWorker='0.6.0';
   const base = 'http://127.0.0.1:43861';
   let token = GM_getValue('queueToken','');
   let installationId=GM_getValue('installationId','');if(!/^[0-9a-f-]{36}$/i.test(installationId)){installationId=crypto.randomUUID();GM_setValue('installationId',installationId);}
   const clientId=new URLSearchParams(location.search).get('upload_studio_worker')||crypto.randomUUID();
+  const pageInstanceId=crypto.randomUUID();
+  const journalKey=`workerJournal:${clientId}`;
   const workerUrl=pathname=>`${pathname}?upload_studio_worker=${encodeURIComponent(clientId)}`;
   let workerSession='';
   let workerStage='idle',progressAt=Date.now();
   function setStage(value){workerStage=value;progressAt=Date.now();say(value);}
+  function readJournal(){const value=GM_getValue(journalKey,null);return value&&value.batchId?value:null;}
+  function writeJournal(value){GM_setValue(journalKey,{...value,updatedAt:Date.now()});}
+  function clearJournal(){GM_deleteValue(journalKey);}
   const badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;z-index:2147483647;bottom:12px;left:12px;background:#111;color:#eee;border:1px solid #555;padding:7px 10px;border-radius:7px;font:12px system-ui;max-width:360px';
   const statusText=document.createElement('span');statusText.textContent='Local upload queue: checking';
@@ -93,6 +99,7 @@
     setStage('finishing metadata');const finish=document.querySelector('.finish-forms');if(!finish)throw new Error('Finish button missing');finish.click();
     await wait(()=>{const x=document.querySelector('#final-submit');return x&&x.offsetParent!==null&&x},15000);
     setStage('submitting batch');
+    writeJournal({batchId:batch.id,itemCount:batch.items.length,phase:'submitting'});
     document.querySelector('#final-submit').click();
     batch.submittedToSite = true;
     setStage('waiting for submission results');
@@ -101,7 +108,9 @@
     if(results.length!==files.length)throw new Error(`Submission outcome uncertain: ${results.length}/${files.length} rows`);
     // Result order follows the site's displayed form order, which was mapped by preview hash.
     const resultByItem=new Map(results.map((el,i)=>[ordered[i],{status:el.querySelector('.badge.bg-success')?'submitted':'retry',note:el.innerText.slice(-180)}]));
-    return batch.items.map(item=>resultByItem.get(item));
+    const outcomes=batch.items.map(item=>resultByItem.get(item));
+    writeJournal({batchId:batch.id,itemCount:batch.items.length,phase:'outcomes',outcomes});
+    return outcomes;
   }
   function withTimeout(promise,timeout){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error(`Worker watchdog stopped a stalled batch after ${Math.round(timeout/1000)} seconds`)),timeout);promise.then(value=>{clearTimeout(timer);resolve(value)},error=>{clearTimeout(timer);reject(error)})})}
   async function reportResult(id,outcomes){let lastError;for(let attempt=0;attempt<3;attempt++){try{return await request('result',{id,outcomes},'json',60000)}catch(error){lastError=error;if(attempt<2)await new Promise(resolve=>setTimeout(resolve,1000*(attempt+1)))}}throw lastError;}
@@ -109,9 +118,10 @@
   async function announce(){
     if(helloPromise)return helloPromise;
     helloPromise=(async()=>{
-      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.5.5',heartbeat:true,clientId,installationId,stage:workerStage,progressAt});
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.6.0',heartbeat:true,clientId,installationId,pageInstanceId,stage:workerStage,progressAt});
       if(hello.reloadRequired){const key=`uploadStudioReloaded:${hello.minimumVersion}`;if(!sessionStorage.getItem(key)){sessionStorage.setItem(key,'1');setStage(`updating worker to ${hello.minimumVersion}`);location.reload();await new Promise(()=>{});}throw new Error(`Worker ${hello.minimumVersion} is required; update Tampermonkey and reload`);}
-      if(hello.duplicate){duplicateMode=true;setStage('duplicate worker copy inactive');return hello;}
+      if(hello.duplicate){duplicateMode=true;workerSession='';setStage(hello.activeLease?'waiting for active page instance':'duplicate worker copy inactive');return hello;}
+      duplicateMode=false;
       workerSession=hello.session;
       for(const id of hello.spawnIds||[])GM_openInTab(`https://emoji.gg/submit?upload_studio_worker=${encodeURIComponent(id)}`,{active:false,insert:true});
       return hello;
@@ -127,18 +137,20 @@
       const status=await request('status');showQueue(status);if(!status.running||status.paused){say(status.paused?'paused':'idle');return;}
       if(location.pathname==='/submit/sticker'){location.href=workerUrl('/submit');return;}
       if(location.pathname!=='/submit')return;
-      const next=await request('next');if(next.blocked){setStage('recovering unacknowledged batch');await reportResult(next.blocked.id,Array.from({length:next.blocked.itemCount},()=>({status:'uncertain',note:'Worker lost the submission acknowledgement; review before retry'})));setStage('recovered unacknowledged batch');location.href=workerUrl('/submit/sticker');return;}const {batch}=next;if(!batch){setStage('ready for next batch');return;}
+      const next=await request('next');if(next.blocked){const journal=readJournal();if(journal?.batchId===next.blocked.id&&journal.phase==='outcomes'&&Array.isArray(journal.outcomes)){setStage('restoring saved submission results');await reportResult(journal.batchId,journal.outcomes);clearJournal();location.href=workerUrl('/submit/sticker');return;}if(journal?.batchId===next.blocked.id&&journal.phase==='leased'){setStage('returning interrupted pre-submit batch');await reportResult(journal.batchId,Array.from({length:next.blocked.itemCount},()=>({status:'retry',note:'Worker reloaded before site submission'})));clearJournal();location.href=workerUrl('/submit/sticker');return;}setStage('submission outcome awaiting reconciliation');return;}const {batch}=next;if(!batch){setStage('ready for next batch');return;}
+      writeJournal({batchId:batch.id,itemCount:batch.items.length,phase:'leased'});
       setStage(`uploading ${batch.items.length}; ${status.queued} queued`);
-      try{const outcomes=await withTimeout(upload(batch),180000);await reportResult(batch.id,outcomes);setStage(`${outcomes.filter(x=>x.status==='submitted').length}/${outcomes.length} submitted`);location.href=workerUrl('/submit/sticker');}
+      try{const outcomes=await withTimeout(upload(batch),180000);await reportResult(batch.id,outcomes);clearJournal();setStage(`${outcomes.filter(x=>x.status==='submitted').length}/${outcomes.length} submitted`);location.href=workerUrl('/submit/sticker');}
       catch(error){
+        const saved=readJournal();if(saved?.batchId===batch.id&&saved.phase==='outcomes'&&Array.isArray(saved.outcomes)){setStage(`result acknowledgement pending: ${error.message}`);console.error('[Emoji queue]',error);return;}
         const status=batch.submittedToSite?'uncertain':'retry';
         setStage(`batch ${status}: ${error.message}`);
-        await reportResult(batch.id,batch.items.map(()=>({status,note:error.message})));
+        const outcomes=batch.items.map(()=>({status,note:error.message}));writeJournal({batchId:batch.id,itemCount:batch.items.length,phase:'outcomes',outcomes});await reportResult(batch.id,outcomes);clearJournal();
         console.error('[Emoji queue]',error);
         location.href=workerUrl('/submit/sticker');
       }
     }catch(error){const old=legacyWorker();if(old){old.append(studioLink);legacyMode=true;badge.remove();setInterval(()=>{const current=legacyWorker();if(current)current.append(studioLink);},1000);return;}if(/Invalid queue token/.test(error.message)){token='';GM_setValue('queueToken','');workerSession='';}queueText.textContent='';queueButton.style.display='none';say(error.message);}finally{busy=false;}
   }
-  setInterval(()=>{if(busy&&token&&!legacyMode&&!duplicateMode)announce().catch(()=>{});},5000);
+  setInterval(()=>{if(token&&!legacyMode&&(busy||duplicateMode))announce().catch(()=>{});},5000);
   setInterval(tick,2500);tick();
 })();
