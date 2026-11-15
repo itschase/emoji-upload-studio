@@ -40,7 +40,7 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     assert.match(workerScript,/returning unowned batch to retry/);
     assert.doesNotMatch(workerScript,/Worker lost the submission acknowledgement/);
     assert.equal(status.protocolVersion,'0.4.0');
-    assert.equal(status.studioVersion,'0.6.14');
+    assert.equal(status.studioVersion,'0.6.15');
     assert.equal(status.root,root);
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aQb8AAAAASUVORK5CYII=','base64');
     const imported=await fetch(base+'/api/import?pack=Sample&filename=test-icon.png',{method:'POST',headers,body:png});
@@ -79,6 +79,7 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     const firstClientId=crypto.randomUUID(),firstInstallationId=crypto.randomUUID(),firstPageInstanceId=crypto.randomUUID();
     const hello=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.6.14',heartbeat:true,clientId:firstClientId,installationId:firstInstallationId,pageInstanceId:firstPageInstanceId,stage:'ready'})}).then(r=>r.json());
     assert.ok(hello.session);
+    assert.equal(hello.spawnIds.length,0,'an idle Studio must not open worker tabs automatically');
     const duplicateHello=await fetch(base+'/api/hello',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({version:'0.4.0',scriptVersion:'0.6.14',heartbeat:true,clientId:firstClientId,installationId:crypto.randomUUID(),pageInstanceId:crypto.randomUUID(),stage:'ready'})}).then(r=>r.json());
     assert.equal(duplicateHello.duplicate,true,'a second installed script cannot share an active worker identity');
     const connected=await fetch(base+'/api/status',{headers}).then(r=>r.json());

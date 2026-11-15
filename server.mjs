@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.6.14';
+const STUDIO_VERSION='0.6.15';
 const MAX_AUTOMATIC_RETRIES=3;
 const MAX_UNCERTAIN_BEFORE_PAUSE=10;
 
@@ -49,7 +49,7 @@ function readyWorkers(){return [...workers.values()].filter(isReady).length;}
 function workerSummaries(){return [...workers.entries()].filter(([id,w])=>isConnected(w)||state.leases.some(lease=>lease.owner===id)).map(([id,w])=>({id:id.slice(0,8),installationId:String(w.installationId||'legacy').slice(0,8),version:w.scriptVersion||'older',connected:isConnected(w),ready:isReady(w),inFlight:state.leases.find(lease=>lease.owner===id)?.items.length||0,stage:w.stage||'idle',progressAt:w.progressAt||w.seenAt}));}
 function expireWorkerReservations(){const now=Date.now();for(const [id,reservation] of expectedWorkers)if(reservation.expiresAt<=now)expectedWorkers.delete(id);state.spawnPending=expectedWorkers.size;}
 function reserveMissingWorkers(){expireWorkerReservations();const deficit=Math.max(0,state.workers-activeWorkers()-expectedWorkers.size);for(let i=0;i<deficit;i++)expectedWorkers.set(crypto.randomUUID(),{expiresAt:Date.now()+60000,dispatched:false});state.spawnPending=expectedWorkers.size;return deficit;}
-function dispatchWorkerReservations(){reserveMissingWorkers();const ids=[];for(const [id,reservation] of expectedWorkers)if(!reservation.dispatched){reservation.dispatched=true;ids.push(id);}return ids;}
+function dispatchWorkerReservations(allowAutomaticReserve=true){if(allowAutomaticReserve)reserveMissingWorkers();const ids=[];for(const [id,reservation] of expectedWorkers)if(!reservation.dispatched){reservation.dispatched=true;ids.push(id);}return ids;}
 try { state = { ...state, ...JSON.parse(await fs.readFile(STATE_FILE, 'utf8')) }; }
 catch { /* first run */ }
 try { state.queued = JSON.parse(await fs.readFile(QUEUE_FILE,'utf8')); }
@@ -219,7 +219,7 @@ const server=http.createServer(async(req,res)=>{
       const connectedOthers=[...workers.entries()].filter(([id,value])=>id!==hello.clientId&&isReady(value)).length;
       if(!activeLease&&connectedOthers>=state.workers){workers.delete(hello.clientId);return json(res,200,{ok:true,retire:true,closeAllowed:true,reloadRequired,minimumVersion:STUDIO_VERSION,spawnIds:[]});}
       while(expectedWorkers.size&&activeWorkers()+expectedWorkers.size>state.workers)expectedWorkers.delete(expectedWorkers.keys().next().value);
-      let spawnIds=[];if(isReady(worker)&&Date.now()>=nextSpawnReconcileAt){spawnIds=dispatchWorkerReservations();nextSpawnReconcileAt=Date.now()+5000;}state.spawnPending=expectedWorkers.size;
+      let spawnIds=[];if(isReady(worker)&&Date.now()>=nextSpawnReconcileAt){spawnIds=dispatchWorkerReservations(state.running&&!state.paused);nextSpawnReconcileAt=Date.now()+5000;}state.spawnPending=expectedWorkers.size;
       return json(res,200,{ok:true,session:worker.session,spawnIds,reloadRequired,minimumVersion:STUDIO_VERSION});
     });
     if(u.pathname==='/api/catalog')return json(res,200,await catalog(Math.max(0,Number(u.searchParams.get('offset')||0)),Math.min(100,Math.max(1,Number(u.searchParams.get('limit')||40))),u.searchParams.get('folder')||'',u.searchParams.get('status')||'pending'));
@@ -304,7 +304,7 @@ async function recoverDisconnectedBatches(){
     state.failed+=stale.reduce((sum,lease)=>sum+lease.items.length,0);
     state.uncertainThisRun=(state.uncertainThisRun||0)+stale.reduce((sum,lease)=>sum+lease.items.length,0);if(state.uncertainThisRun>=MAX_UNCERTAIN_BEFORE_PAUSE)state.paused=true;
     state.message=`${state.failed} unresolved; ${stale.length} disconnected batches need review`;
-    reserveMissingWorkers();
+    if(state.running&&!state.paused)reserveMissingWorkers();
     nextSpawnReconcileAt=0;
     if(state.cursor>=state.queued.length&&!state.leases.length)state.running=false;
     await save();
