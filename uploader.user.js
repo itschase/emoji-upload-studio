@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.6.12
+// @version      0.6.13
 // @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
@@ -11,6 +11,7 @@
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_openInTab
+// @grant        GM_closeTab
 // @connect      127.0.0.1
 // @updateURL    https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
 // @downloadURL  https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
@@ -20,7 +21,7 @@
   'use strict';
   if(!['/submit','/submit/sticker'].includes(location.pathname))return;
   if(document.documentElement.dataset.emojiUploadStudioWorker)return;
-  document.documentElement.dataset.emojiUploadStudioWorker='0.6.12';
+  document.documentElement.dataset.emojiUploadStudioWorker='0.6.13';
   const base = 'http://127.0.0.1:43861';
   let token = GM_getValue('queueToken','');
   let installationId=GM_getValue('installationId','');if(!/^[0-9a-f-]{36}$/i.test(installationId)){installationId=crypto.randomUUID();GM_setValue('installationId',installationId);}
@@ -35,6 +36,7 @@
   function readJournal(){const value=GM_getValue(journalKey,null);return value&&value.batchId?value:null;}
   function writeJournal(value){GM_setValue(journalKey,{...value,updatedAt:Date.now()});}
   function clearJournal(){GM_deleteValue(journalKey);}
+  function closeWorkerTab(){try{GM_closeTab()}catch{window.close()}}
   const badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;z-index:2147483647;bottom:12px;left:12px;background:#111;color:#eee;border:1px solid #555;padding:7px 10px;border-radius:7px;font:12px system-ui;max-width:360px';
   const statusText=document.createElement('span');statusText.textContent='Local upload queue: checking';
@@ -119,9 +121,9 @@
   async function announce(){
     if(helloPromise)return helloPromise;
     helloPromise=(async()=>{
-      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.6.12',heartbeat:true,clientId,installationId,pageInstanceId,pageStartedAt:performance.timeOrigin,stage:workerStage,progressAt});
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.6.13',heartbeat:true,clientId,installationId,pageInstanceId,pageStartedAt:performance.timeOrigin,stage:workerStage,progressAt});
       if(hello.reloadRequired){const key=`uploadStudioReloaded:${hello.minimumVersion}`;if(!sessionStorage.getItem(key)){sessionStorage.setItem(key,'1');setStage(`updating worker to ${hello.minimumVersion}`);location.reload();await new Promise(()=>{});}throw new Error(`Worker ${hello.minimumVersion} is required; update Tampermonkey and reload`);}
-      if(hello.retire||hello.duplicate){duplicateMode=true;workerSession='';setStage(hello.retire?'surplus worker closing':hello.activeLease?'waiting for active page instance':'duplicate worker closing');if(hello.closeAllowed&&openedByStudio)setTimeout(()=>window.close(),300);return hello;}
+      if(hello.retire||hello.duplicate){duplicateMode=true;workerSession='';setStage(hello.retire?'surplus worker closing':hello.activeLease?'waiting for active page instance':'duplicate worker closing');if(hello.closeAllowed&&openedByStudio)setTimeout(closeWorkerTab,300);return hello;}
       duplicateMode=false;
       workerSession=hello.session;
       for(const id of hello.spawnIds||[])GM_openInTab(`https://emoji.gg/submit?upload_studio_worker=${encodeURIComponent(id)}`,{active:false,insert:true});
@@ -135,7 +137,7 @@
       if(!token){token=await pair();GM_setValue('queueToken',token);say('paired with local studio');}
       await announce();
       if(duplicateMode)return;
-      const status=await request('status');showQueue(status);if(!status.running||status.paused&&!status.leased){say(status.paused?'paused':'idle');if(openedByStudio&&!status.running&&!status.queued&&!status.leased)setTimeout(()=>window.close(),500);return;}
+      const status=await request('status');showQueue(status);if(!status.running||status.paused&&!status.leased){say(status.paused?'paused':'idle');if(openedByStudio&&!status.running&&!status.queued&&!status.leased)setTimeout(closeWorkerTab,500);return;}
       if(location.pathname==='/submit/sticker'){location.href=workerUrl('/submit');return;}
       if(location.pathname!=='/submit')return;
       const next=await request('next');if(next.blocked){const journal=readJournal();if(journal?.batchId===next.blocked.id&&journal.phase==='outcomes'&&Array.isArray(journal.outcomes)){setStage('restoring saved submission results');await reportResult(journal.batchId,journal.outcomes);clearJournal();location.href=workerUrl('/submit/sticker');return;}if(journal?.batchId===next.blocked.id&&journal.phase==='leased'){setStage('returning interrupted pre-submit batch');await reportResult(journal.batchId,Array.from({length:next.blocked.itemCount},()=>({status:'retry',note:'Worker reloaded before site submission'})));clearJournal();location.href=workerUrl('/submit/sticker');return;}setStage('returning unowned batch to retry');await reportResult(next.blocked.id,Array.from({length:next.blocked.itemCount},()=>({status:'retry',note:'Replacement page had no matching batch journal; returned for automatic retry'})));clearJournal();return;}const {batch}=next;if(!batch){setStage('ready for next batch');return;}
