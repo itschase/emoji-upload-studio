@@ -4,7 +4,7 @@
 // @version      0.8.0
 // @description  Connects Emoji.gg worker tabs to the browser-based Upload Studio and submits prepared batches of ten.
 // @license      MIT
-// @homepageURL  https://github.com/itschase/emoji-upload-studio
+// @homepageURL  https://emote-forge.itschase.workers.dev/
 // @match        https://emoji.gg/submit*
 // @match        https://emoji.gg/user/*
 // @grant        GM_xmlhttpRequest
@@ -14,8 +14,8 @@
 // @grant        GM_openInTab
 // @grant        window.close
 // @connect      127.0.0.1
-// @updateURL    https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
-// @downloadURL  https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
+// @updateURL    https://emote-forge.itschase.workers.dev/uploader.user.js
+// @downloadURL  https://emote-forge.itschase.workers.dev/uploader.user.js
 // @run-at       document-idle
 // ==/UserScript==
 (() => {
