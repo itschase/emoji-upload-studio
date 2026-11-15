@@ -106,7 +106,7 @@ Cloudflare stores secrets outside the repository. The frontend never receives th
 
 ## Discord application
 
-The Discord application is **Emote Forge**, application/client ID `1571592048576831691`.
+The Discord application is **Emote Forge**, application/client ID `1571592048576831691`. The required server is Emote Forge, guild ID `1571591932290011266`.
 
 Required OAuth scopes:
 

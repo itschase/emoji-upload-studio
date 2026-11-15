@@ -4,7 +4,7 @@ compatibility_date = "2026-11-15"
 
 [vars]
 DISCORD_CLIENT_ID = "1571592048576831691"
-DISCORD_GUILD_ID = "replace-with-emote-forge-server-id"
+DISCORD_GUILD_ID = "1571591932290011266"
 ALLOWED_RETURN_ORIGINS = "https://itschase.github.io"
 
 # Add these with `wrangler secret put`; never commit their values:
