@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.6.3';
+const STUDIO_VERSION='0.6.4';
 const MAX_AUTOMATIC_RETRIES=3;
 const MAX_UNCERTAIN_BEFORE_PAUSE=10;
 
@@ -42,7 +42,7 @@ let nextSpawnReconcileAt=0;
 let mutation=Promise.resolve();
 function serial(work){const task=mutation.then(work);mutation=task.catch(()=>{});return task;}
 function isConnected(worker){return Date.now()-worker.seenAt<30000;}
-function versionAtLeast(value,minimum='0.6.3'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
+function versionAtLeast(value,minimum='0.6.4'){const a=String(value||'0').split('.').map(Number),b=minimum.split('.').map(Number);for(let i=0;i<3;i++){if((a[i]||0)!==(b[i]||0))return (a[i]||0)>(b[i]||0);}return true;}
 function isReady(worker){return isConnected(worker)&&worker.supportsHeartbeat&&versionAtLeast(worker.scriptVersion);}
 function activeWorkers(){return [...workers.values()].filter(isConnected).length;}
 function readyWorkers(){return [...workers.values()].filter(isReady).length;}
@@ -262,7 +262,7 @@ const startupUpdateTimer=setTimeout(checkStudioUpdate,5000);
 startupUpdateTimer.unref();
 async function recoverDisconnectedBatches(){
   await serial(async()=>{
-    const stale=state.leases.filter(lease=>{const worker=workers.get(lease.owner);return worker?.supportsHeartbeat&&Date.now()-worker.seenAt>120000;});
+    const stale=state.leases.filter(lease=>{const worker=workers.get(lease.owner);return worker?.supportsHeartbeat&&(Date.now()-worker.seenAt>120000||Date.now()-(worker.progressAt||lease.issuedAt)>120000);});
     if(!stale.length)return;
     for(const lease of stale)await updateManifest(lease.items,lease.items.map(()=>({status:'uncertain',note:'Worker tab disconnected during submission; review result before retry'})));
     state.leases=state.leases.filter(lease=>!stale.includes(lease));
