@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.6.5';
+const STUDIO_VERSION='0.6.6';
 const MAX_AUTOMATIC_RETRIES=3;
 const MAX_UNCERTAIN_BEFORE_PAUSE=10;
 
@@ -67,8 +67,18 @@ function parseCsv(text) {
 async function manifestStatusCounts(force=false){if(!force&&manifestCountsCache.value&&Date.now()-manifestCountsCache.at<10000)return manifestCountsCache.value;const counts={pending:0,retry:0,uncertain:0,submitted:0,other:0};const dirs=(await fs.readdir(ROOT,{withFileTypes:true})).filter(entry=>entry.isDirectory()&&!entry.name.startsWith('.'));for(const dir of dirs){let rows;try{rows=parseCsv(await fs.readFile(path.join(ROOT,dir.name,'upload_manifest.csv'),'utf8'));}catch{continue;}for(const row of rows){const status=String(row.upload_status||'other');counts[status]=(counts[status]||0)+1;}}counts.unresolved=(counts.retry||0)+(counts.uncertain||0);manifestCountsCache={at:Date.now(),value:counts};return counts;}
 function invalidateManifestCounts(){manifestCountsCache.at=0;manifestCountsCache.value=null;}
 function csv(rows) { const q=v=>`"${String(v??'').replaceAll('"','""')}"`; return [columns.map(q).join(','),...rows.map(r=>columns.map(k=>q(r[k])).join(','))].join('\r\n')+'\r\n'; }
-async function save() { const temp=STATE_FILE+'.tmp'; const {queued,...small}=state; await fs.writeFile(temp,JSON.stringify({...small,queued:queued.length},null,2)); await fs.rename(temp,STATE_FILE); }
-async function saveQueue(){const temp=QUEUE_FILE+'.tmp';await fs.writeFile(temp,JSON.stringify(state.queued));await fs.rename(temp,QUEUE_FILE);}
+async function atomicWrite(file,data){
+  const temp=`${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  await fs.writeFile(temp,data);
+  try{
+    for(let attempt=0;;attempt++){
+      try{await fs.rename(temp,file);return;}
+      catch(error){if(!['EPERM','EACCES','EBUSY'].includes(error.code)||attempt>=9)throw error;await new Promise(resolve=>setTimeout(resolve,25*(attempt+1)));}
+    }
+  }finally{await fs.rm(temp,{force:true}).catch(()=>{});}
+}
+async function save() { const {queued,...small}=state; await atomicWrite(STATE_FILE,JSON.stringify({...small,queued:queued.length},null,2)); }
+async function saveQueue(){await atomicWrite(QUEUE_FILE,JSON.stringify(state.queued));}
 async function updateManifest(items, outcomes) {
   const byFolder=new Map();
   for(let i=0;i<items.length;i++){ const item=items[i]; const group=byFolder.get(item.folder)||[]; group.push([item,outcomes[i]]); byFolder.set(item.folder,group); }

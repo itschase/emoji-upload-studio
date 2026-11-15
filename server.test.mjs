@@ -39,7 +39,7 @@ test('local import, worker spawning, and parallel batch leases', async () => {
     assert.match(workerScript,/reconciling unowned batch/);
     assert.doesNotMatch(workerScript,/Worker lost the submission acknowledgement/);
     assert.equal(status.protocolVersion,'0.4.0');
-    assert.equal(status.studioVersion,'0.6.5');
+    assert.equal(status.studioVersion,'0.6.6');
     assert.equal(status.root,root);
     const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aQb8AAAAASUVORK5CYII=','base64');
     const imported=await fetch(base+'/api/import?pack=Sample&filename=test-icon.png',{method:'POST',headers,body:png});
