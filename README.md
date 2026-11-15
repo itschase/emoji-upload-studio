@@ -70,6 +70,7 @@ Already-open worker tabs are reused before new tabs are created. Outdated worker
 - The server records which tab owns each batch. A tab cannot read or report another tab's lease, and two tabs cannot receive the same images. Restarting the server with an in-flight batch marks that batch `uncertain` for review.
 - The dashboard's connected-tab count uses live worker check-ins. A worker keeps checking in while it submits a batch. Total outstanding leases are capped by the configured worker count even while pages navigate or temporarily disconnect.
 - Each worker journals its leased batch and parsed site results in Tampermonkey storage. After a page reload, known results are acknowledged idempotently and a batch interrupted before submission safely returns to `retry`. A post-submit batch with no captured result remains blocked for reconciliation instead of being mass-marked `uncertain` by an idle duplicate page.
+- A safety circuit breaker pauses the queue when ten items in one run receive ambiguous outcomes. This bounds damage to one normal batch and leaves the evidence available for review.
 - A pack folder receives the `.uploaded-` prefix only after every manifest row is `submitted`.
 - For an unattended run, `node auto-finish.mjs` watches the queue, performs one bounded pass over explicit `retry` rows, and writes `.upload-queue/auto-finish-report.json`. It leaves `uncertain` rows for review.
 
