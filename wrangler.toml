@@ -1,4 +1,4 @@
-name = "emote-forge-studio"
+name = "emote-forge"
 main = "auth-worker/worker.mjs"
 compatibility_date = "2026-11-15"
 
