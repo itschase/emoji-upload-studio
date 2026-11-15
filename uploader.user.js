@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.8.0
+// @version      0.9.0
 // @description  Connects Emoji.gg worker tabs to the browser-based Upload Studio and submits prepared batches of ten.
 // @license      MIT
 // @homepageURL  https://emote-forge.itschase.workers.dev/
 // @match        https://emoji.gg/submit*
 // @match        https://emoji.gg/user/*
+// @match        https://emote-forge.itschase.workers.dev/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -21,7 +22,14 @@
 (() => {
   'use strict';
   const base = 'http://127.0.0.1:43861';
+  if(location.hostname==='emote-forge.itschase.workers.dev'){
+    const announce=()=>window.postMessage({type:'EMOTE_FORGE_BRIDGE_STATUS',source:'userscript',version:'0.9.0',active:true},location.origin);
+    addEventListener('message',event=>{if(event.source===window&&event.data?.type==='EMOTE_FORGE_BRIDGE_PROBE')announce()});
+    announce();return;
+  }
   let token = GM_getValue('queueToken','');
+  const initialParams=new URLSearchParams(location.search),probeSession=initialParams.get('browser_studio_probe')||'',probeOrigin=initialParams.get('browser_studio_origin')||'';
+  if(probeSession&&probeOrigin){let trusted='';try{trusted=new URL(probeOrigin).origin}catch{}if(trusted){window.opener?.postMessage({type:'EMOTE_FORGE_BRIDGE_STATUS',session:probeSession,version:'0.9.0',active:true},trusted);}return;}
   if(location.pathname.startsWith('/user/')){
     const profileParams=new URLSearchParams(location.search),profileSession=profileParams.get('browser_studio_profile_session')||'',profileOrigin=profileParams.get('browser_studio_origin')||'';
     let trustedProfileOrigin='';if(profileSession&&profileOrigin){try{trustedProfileOrigin=new URL(profileOrigin).origin}catch{}}
@@ -33,7 +41,7 @@
   }
   if(!['/submit','/submit/sticker'].includes(location.pathname))return;
   if(document.documentElement.dataset.emojiUploadStudioWorker)return;
-  document.documentElement.dataset.emojiUploadStudioWorker='0.8.0';
+  document.documentElement.dataset.emojiUploadStudioWorker='0.9.0';
   let installationId=GM_getValue('installationId','');if(!/^[0-9a-f-]{36}$/i.test(installationId)){installationId=crypto.randomUUID();GM_setValue('installationId',installationId);}
   const workerParams=new URLSearchParams(location.search);if(workerParams.has('upload_studio_worker')){sessionStorage.setItem('uploadStudioManaged','1');sessionStorage.setItem('uploadStudioClientId',workerParams.get('upload_studio_worker'));}const openedByStudio=sessionStorage.getItem('uploadStudioManaged')==='1';
   let clientId=workerParams.get('upload_studio_worker')||sessionStorage.getItem('uploadStudioClientId')||crypto.randomUUID();if(!/^[0-9a-f-]{36}$/i.test(clientId))clientId=crypto.randomUUID();if(openedByStudio)sessionStorage.setItem('uploadStudioClientId',clientId);
@@ -150,7 +158,7 @@
   async function announce(){
     if(helloPromise)return helloPromise;
     helloPromise=(async()=>{
-      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.8.0',heartbeat:true,clientId,installationId,pageInstanceId,pageStartedAt:performance.timeOrigin,stage:workerStage,progressAt,account:observedAccount()});
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.9.0',heartbeat:true,clientId,installationId,pageInstanceId,pageStartedAt:performance.timeOrigin,stage:workerStage,progressAt,account:observedAccount()});
       if(hello.reloadRequired){const key=`uploadStudioReloaded:${hello.minimumVersion}`;if(!sessionStorage.getItem(key)){sessionStorage.setItem(key,'1');setStage(`updating worker to ${hello.minimumVersion}`);location.reload();await new Promise(()=>{});}throw new Error(`Worker ${hello.minimumVersion} is required; update Tampermonkey and reload`);}
       if(hello.retire||hello.duplicate){duplicateMode=true;workerSession='';setStage(hello.retire?'surplus worker closing':hello.activeLease?'waiting for active page instance':'duplicate worker closing');if(hello.closeAllowed&&openedByStudio)setTimeout(closeWorkerTab,300);return hello;}
       duplicateMode=false;

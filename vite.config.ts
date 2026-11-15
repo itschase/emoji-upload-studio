@@ -5,5 +5,5 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   build: { outDir: 'dist', emptyOutDir: true },
-  server: { proxy: { '/api': 'http://127.0.0.1:43861' } },
+  server: { watch:{ignored:['**/.ui-review/**']}, proxy: { '/api': 'http://127.0.0.1:43861' } },
 })
