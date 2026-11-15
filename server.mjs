@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.6.10';
+const STUDIO_VERSION='0.6.11';
 const MAX_AUTOMATIC_RETRIES=3;
 const MAX_UNCERTAIN_BEFORE_PAUSE=10;
 
@@ -79,6 +79,18 @@ async function atomicWrite(file,data){
 }
 async function save() { const {queued,...small}=state; await atomicWrite(STATE_FILE,JSON.stringify({...small,queued:queued.length},null,2)); }
 async function saveQueue(){await atomicWrite(QUEUE_FILE,JSON.stringify(state.queued));}
+async function finalizeFolder(folder){
+  const source=path.join(ROOT,folder),target=path.join(ROOT,`.uploaded-${folder}`);
+  for(let attempt=0;attempt<8;attempt++){
+    try{await fs.rename(source,target);return true;}
+    catch(error){
+      if(error.code==='ENOENT'){try{if((await fs.stat(target)).isDirectory())return true;}catch{}return false;}
+      if(!['EPERM','EACCES','EBUSY'].includes(error.code))return false;
+      await new Promise(resolve=>setTimeout(resolve,75*(attempt+1)));
+    }
+  }
+  console.warn(`Completed folder rename deferred: ${folder}`);return false;
+}
 async function updateManifest(items, outcomes) {
   const byFolder=new Map();
   for(let i=0;i<items.length;i++){ const item=items[i]; const group=byFolder.get(item.folder)||[]; group.push([item,outcomes[i]]); byFolder.set(item.folder,group); }
@@ -86,9 +98,7 @@ async function updateManifest(items, outcomes) {
     const file=path.join(ROOT,folder,'upload_manifest.csv'); const rows=parseCsv(await fs.readFile(file,'utf8'));
     for(const [item,outcome] of group){ const row=rows.find(r=>r.filename===item.filename); if(!row)throw new Error(`Manifest row missing: ${folder}/${item.filename}`); row.upload_status=outcome.status; row.upload_notes=outcome.note||''; }
     const temp=file+'.queue-tmp'; await fs.writeFile(temp,csv(rows)); await fs.rename(temp,file);
-    if(rows.length && rows.every(r=>r.upload_status==='submitted')){
-      await fs.rename(path.join(ROOT,folder),path.join(ROOT,`.uploaded-${folder}`));
-    }
+    if(rows.length&&rows.every(r=>r.upload_status==='submitted')&&!await finalizeFolder(folder))state.message=`Uploads acknowledged; completed folder rename deferred for ${folder}`;
   }
   invalidateManifestCounts();
 }
@@ -308,3 +318,9 @@ const completedLeasePruneTimer=setInterval(()=>{for(const [id,value] of complete
 completedLeasePruneTimer.unref();
 const importCleanupTimer=setInterval(async()=>{for(const [id,session] of importSessions)if(session.expiresAt<Date.now()){importSessions.delete(id);await fs.rm(session.stage,{recursive:true,force:true}).catch(()=>{});}},60000);
 importCleanupTimer.unref();
+async function finalizeCompletedFolders(){
+  const dirs=(await fs.readdir(ROOT,{withFileTypes:true})).filter(entry=>entry.isDirectory()&&!entry.name.startsWith('.'));
+  for(const dir of dirs){let rows;try{rows=parseCsv(await fs.readFile(path.join(ROOT,dir.name,'upload_manifest.csv'),'utf8'));}catch{continue;}if(rows.length&&rows.every(row=>row.upload_status==='submitted'))await finalizeFolder(dir.name);}
+}
+const finalizationTimer=setInterval(()=>serial(finalizeCompletedFolders).catch(error=>console.error('Could not finalize completed folders:',error)),30000);
+finalizationTimer.unref();
