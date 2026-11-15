@@ -1,17 +1,18 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.6.15
-// @description  Works with the local Upload Studio to stage and submit Emoji.gg images in batches of ten.
+// @version      0.8.0
+// @description  Connects Emoji.gg worker tabs to the browser-based Upload Studio and submits prepared batches of ten.
 // @license      MIT
 // @homepageURL  https://github.com/itschase/emoji-upload-studio
 // @match        https://emoji.gg/submit*
+// @match        https://emoji.gg/user/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
 // @grant        GM_openInTab
-// @grant        GM_closeTab
+// @grant        window.close
 // @connect      127.0.0.1
 // @updateURL    https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
 // @downloadURL  https://raw.githubusercontent.com/itschase/emoji-upload-studio/main/uploader.user.js
@@ -19,14 +20,23 @@
 // ==/UserScript==
 (() => {
   'use strict';
-  if(!['/submit','/submit/sticker'].includes(location.pathname))return;
-  if(document.documentElement.dataset.emojiUploadStudioWorker)return;
-  document.documentElement.dataset.emojiUploadStudioWorker='0.6.15';
   const base = 'http://127.0.0.1:43861';
   let token = GM_getValue('queueToken','');
+  if(location.pathname.startsWith('/user/')){
+    const profileParams=new URLSearchParams(location.search),profileSession=profileParams.get('browser_studio_profile_session')||'',profileOrigin=profileParams.get('browser_studio_origin')||'';
+    let trustedProfileOrigin='';if(profileSession&&profileOrigin){try{trustedProfileOrigin=new URL(profileOrigin).origin}catch{}}
+    if(!token&&!trustedProfileOrigin)return;
+    let timer=0,lastPayload='';
+    const number=value=>Number(String(value||'').replace(/[^0-9]/g,''))||0;
+    const report=()=>{clearTimeout(timer);timer=setTimeout(()=>{const username=decodeURIComponent(location.pathname.split('/').filter(Boolean).pop()||''),links=[...document.querySelectorAll('.nav-link')],counts={emojis:0,stickers:0,packs:0};for(const link of links){const text=link.textContent.toLowerCase(),count=number(link.querySelector('.badge')?.textContent);if(text.includes('emoji'))counts.emojis=count;if(text.includes('sticker'))counts.stickers=count;if(text.includes('pack'))counts.packs=count;}const stats=document.querySelector('.stats-rank')?.textContent||'',downloads=number(stats.match(/[\d,]+\s+Downloads/i)?.[0]),rank=(stats.match(/Ranked\s+#[\d,]+/i)||[])[0]||'',active=(links.find(link=>link.classList.contains('active'))?.textContent||'emojis').toLowerCase().replace(/[\d,]/g,'').trim(),payload={username,profileUrl:`${location.origin}${location.pathname}`,avatarUrl:document.querySelector('.profile-header img')?.src||'',rank,downloads,counts,observedAt:Date.now(),loaded:{kind:active,count:document.querySelectorAll('.asset-card').length,complete:!document.querySelector('a.btn-primary.btn-sm.w-50')&&!document.querySelector('[data-loading="true"]')}};const serialized=JSON.stringify(payload);if(serialized===lastPayload)return;lastPayload=serialized;if(trustedProfileOrigin)window.opener?.postMessage({type:'EMOTE_FORGE_PROFILE',session:profileSession,payload},trustedProfileOrigin);if(token)GM_xmlhttpRequest({method:'POST',url:`${base}/api/account-snapshot`,headers:{'X-Queue-Token':token,'Content-Type':'application/json'},data:serialized,timeout:10000});},700)};
+    new MutationObserver(report).observe(document.body,{childList:true,subtree:true,characterData:true});report();return;
+  }
+  if(!['/submit','/submit/sticker'].includes(location.pathname))return;
+  if(document.documentElement.dataset.emojiUploadStudioWorker)return;
+  document.documentElement.dataset.emojiUploadStudioWorker='0.8.0';
   let installationId=GM_getValue('installationId','');if(!/^[0-9a-f-]{36}$/i.test(installationId)){installationId=crypto.randomUUID();GM_setValue('installationId',installationId);}
-  const workerParams=new URLSearchParams(location.search);if(workerParams.has('upload_studio_worker'))sessionStorage.setItem('uploadStudioManaged','1');const openedByStudio=sessionStorage.getItem('uploadStudioManaged')==='1';
-  const clientId=workerParams.get('upload_studio_worker')||crypto.randomUUID();
+  const workerParams=new URLSearchParams(location.search);if(workerParams.has('upload_studio_worker')){sessionStorage.setItem('uploadStudioManaged','1');sessionStorage.setItem('uploadStudioClientId',workerParams.get('upload_studio_worker'));}const openedByStudio=sessionStorage.getItem('uploadStudioManaged')==='1';
+  let clientId=workerParams.get('upload_studio_worker')||sessionStorage.getItem('uploadStudioClientId')||crypto.randomUUID();if(!/^[0-9a-f-]{36}$/i.test(clientId))clientId=crypto.randomUUID();if(openedByStudio)sessionStorage.setItem('uploadStudioClientId',clientId);
   const pageInstanceId=crypto.randomUUID();
   const journalKey=`workerJournal:${clientId}`;
   const workerUrl=pathname=>`${pathname}?upload_studio_worker=${encodeURIComponent(clientId)}`;
@@ -36,7 +46,8 @@
   function readJournal(){const value=GM_getValue(journalKey,null);return value&&value.batchId?value:null;}
   function writeJournal(value){GM_setValue(journalKey,{...value,updatedAt:Date.now()});}
   function clearJournal(){GM_deleteValue(journalKey);}
-  function closeWorkerTab(){try{GM_closeTab()}catch{window.close()}}
+  function closeWorkerTab(){window.close()}
+  function observedAccount(){const profile=[...document.querySelectorAll('a[href*="/user/"]')].find(link=>/\/user\/[^/]+\/?$/.test(new URL(link.href,location.href).pathname));if(!profile)return null;const profileUrl=new URL(profile.href,location.href).href,username=decodeURIComponent(new URL(profileUrl).pathname.split('/').filter(Boolean).pop()||'').trim(),avatar=document.querySelector('img[src*="/avatars/"]');return username?{username,profileUrl,avatarUrl:avatar?.src||''}:null;}
   const badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;z-index:2147483647;bottom:12px;left:12px;background:#111;color:#eee;border:1px solid #555;padding:7px 10px;border-radius:7px;font:12px system-ui;max-width:360px';
   const statusText=document.createElement('span');statusText.textContent='Local upload queue: checking';
@@ -77,10 +88,10 @@
     console.info('[Emoji queue] accepted tags:',accepted);
     return accepted;
   }
-  async function upload(batch) {
-    setStage(`fetching ${batch.items.length} files`);
+  async function upload(batch,suppliedFiles=[]) {
+    setStage(`loading ${batch.items.length} files`);
     const files=[];const byHash=new Map();
-    for(let i=0;i<batch.items.length;i++) { const item=batch.items[i]; const blob=await request(`file?batch=${encodeURIComponent(batch.id)}&index=${i}` ,undefined,'blob'); const file=new File([blob],item.filename,{type:/\.gif$/i.test(item.filename)?'image/gif':'image/png'}); files.push(file); byHash.set(await digest(file),item); }
+    for(let i=0;i<batch.items.length;i++) { const item=batch.items[i],blob=suppliedFiles[i]||await request(`file?batch=${encodeURIComponent(batch.id)}&index=${i}` ,undefined,'blob'); const file=blob instanceof File?blob:new File([blob],item.filename,{type:/\.gif$/i.test(item.filename)?'image/gif':'image/png'}); files.push(file); byHash.set(await digest(file),item); }
     setStage('loading upload form');const input=await wait(()=>document.querySelector('#media-upload'));
     const transfer=new DataTransfer(); files.forEach(file=>transfer.items.add(file)); input.files=transfer.files; input.dispatchEvent(new Event('change',{bubbles:true}));
     setStage('waiting for previews');await wait(()=>document.querySelectorAll('.emojis-form').length===files.length && [...document.querySelectorAll('.emojis-form img[src^="blob:"]')].length===files.length,30000);
@@ -115,13 +126,31 @@
     writeJournal({batchId:batch.id,itemCount:batch.items.length,phase:'outcomes',outcomes});
     return outcomes;
   }
-  function withTimeout(promise,timeout){return new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error(`Worker watchdog stopped a stalled batch after ${Math.round(timeout/1000)} seconds`)),timeout);promise.then(value=>{clearTimeout(timer);resolve(value)},error=>{clearTimeout(timer);reject(error)})})}
   async function reportResult(id,outcomes){let lastError;for(let attempt=0;attempt<3;attempt++){try{return await request('result',{id,outcomes},'json',60000)}catch(error){lastError=error;if(attempt<2)await new Promise(resolve=>setTimeout(resolve,1000*(attempt+1)))}}throw lastError;}
+  const browserSession=workerParams.get('browser_studio_session')||sessionStorage.getItem('browserStudioSession')||'',browserWorker=workerParams.get('browser_studio_worker')||sessionStorage.getItem('browserStudioWorker')||'',browserOrigin=workerParams.get('browser_studio_origin')||sessionStorage.getItem('browserStudioOrigin')||'';
+  if(browserSession&&browserWorker&&browserOrigin){sessionStorage.setItem('browserStudioSession',browserSession);sessionStorage.setItem('browserStudioWorker',browserWorker);sessionStorage.setItem('browserStudioOrigin',browserOrigin);runBrowserWorker().catch(error=>setStage(error.message));return;}
+  async function runBrowserWorker(){
+    let origin;try{origin=new URL(browserOrigin).origin;}catch{throw new Error('Invalid Studio origin');}
+    if(!/^https:\/\//.test(origin)&&!/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin))throw new Error('Untrusted Studio origin');
+    const params=new URLSearchParams({browser_studio_session:browserSession,browser_studio_worker:browserWorker,browser_studio_origin:origin}),url=path=>`${path}?${params}`;
+    if(location.pathname==='/submit/sticker'){setStage('refreshing Emoji.gg upload form');setTimeout(()=>location.replace(url('/submit')),350);return;}
+    if(location.pathname!=='/submit')throw new Error('Open the Emoji.gg emoji submit page');
+    studioLink.href=origin;studioLink.textContent='Open Upload Studio ↗';statusText.textContent='Browser Upload Studio: ready';queueText.textContent=`Worker ${browserWorker.slice(0,8)} · waiting for a batch`;
+    let active=false;
+    const send=(type,data={})=>window.opener?.postMessage({type,session:browserSession,workerId:browserWorker,...data},origin);
+    window.addEventListener('message',async event=>{
+      if(event.source!==window.opener||event.origin!==origin||event.data?.type!=='EMOTE_FORGE_BATCH'||event.data?.session!==browserSession||event.data?.workerId!==browserWorker||active)return;
+      active=true;const batch=event.data.batch;
+      try{setStage(`uploading ${batch.items.length} items`);const outcomes=await upload(batch,event.data.files||[]);send('EMOTE_FORGE_RESULT',{batchId:batch.id,outcomes});setStage(`${outcomes.filter(item=>item.status==='submitted').length}/${outcomes.length} submitted`);setTimeout(()=>location.replace(url('/submit/sticker')),500);}
+      catch(error){const status=batch?.submittedToSite?'uncertain':'retry',outcomes=(batch?.items||[]).map(()=>({status,note:String(error.message||error).slice(0,300)}));send('EMOTE_FORGE_RESULT',{batchId:batch?.id||'',outcomes,error:String(error.message||error)});setStage(`batch ${status}: ${error.message}`);active=false;}
+    });
+    send('EMOTE_FORGE_READY');setInterval(()=>send('EMOTE_FORGE_HEARTBEAT',{stage:workerStage,active}),5000);
+  }
   let busy=false,legacyMode=false,duplicateMode=false,helloPromise=null;
   async function announce(){
     if(helloPromise)return helloPromise;
     helloPromise=(async()=>{
-      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.6.15',heartbeat:true,clientId,installationId,pageInstanceId,pageStartedAt:performance.timeOrigin,stage:workerStage,progressAt});
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.8.0',heartbeat:true,clientId,installationId,pageInstanceId,pageStartedAt:performance.timeOrigin,stage:workerStage,progressAt,account:observedAccount()});
       if(hello.reloadRequired){const key=`uploadStudioReloaded:${hello.minimumVersion}`;if(!sessionStorage.getItem(key)){sessionStorage.setItem(key,'1');setStage(`updating worker to ${hello.minimumVersion}`);location.reload();await new Promise(()=>{});}throw new Error(`Worker ${hello.minimumVersion} is required; update Tampermonkey and reload`);}
       if(hello.retire||hello.duplicate){duplicateMode=true;workerSession='';setStage(hello.retire?'surplus worker closing':hello.activeLease?'waiting for active page instance':'duplicate worker closing');if(hello.closeAllowed&&openedByStudio)setTimeout(closeWorkerTab,300);return hello;}
       duplicateMode=false;
@@ -140,10 +169,10 @@
       const status=await request('status');showQueue(status);if(!status.running||status.paused&&!status.leased){say(status.paused?'paused':'idle');if(openedByStudio&&!status.running&&!status.queued&&!status.leased)setTimeout(closeWorkerTab,500);return;}
       if(location.pathname==='/submit/sticker'){location.href=workerUrl('/submit');return;}
       if(location.pathname!=='/submit')return;
-      const next=await request('next');if(next.blocked){const journal=readJournal();if(journal?.batchId===next.blocked.id&&journal.phase==='outcomes'&&Array.isArray(journal.outcomes)){setStage('restoring saved submission results');await reportResult(journal.batchId,journal.outcomes);clearJournal();location.href=workerUrl('/submit/sticker');return;}if(journal?.batchId===next.blocked.id&&journal.phase==='leased'){setStage('returning interrupted pre-submit batch');await reportResult(journal.batchId,Array.from({length:next.blocked.itemCount},()=>({status:'retry',note:'Worker reloaded before site submission'})));clearJournal();location.href=workerUrl('/submit/sticker');return;}setStage('returning unowned batch to retry');await reportResult(next.blocked.id,Array.from({length:next.blocked.itemCount},()=>({status:'retry',note:'Replacement page had no matching batch journal; returned for automatic retry'})));clearJournal();return;}const {batch}=next;if(!batch){setStage('ready for next batch');return;}
+      const next=await request('next');if(next.blocked){const journal=readJournal();if(journal?.batchId===next.blocked.id&&journal.phase==='outcomes'&&Array.isArray(journal.outcomes)){setStage('restoring saved submission results');await reportResult(journal.batchId,journal.outcomes);clearJournal();location.href=workerUrl('/submit/sticker');return;}if(journal?.batchId===next.blocked.id&&journal.phase==='leased'){setStage('returning interrupted pre-submit batch');await reportResult(journal.batchId,Array.from({length:next.blocked.itemCount},()=>({status:'retry',note:'Worker reloaded before site submission'})));clearJournal();location.href=workerUrl('/submit/sticker');return;}setStage('holding unowned batch for review');await reportResult(next.blocked.id,Array.from({length:next.blocked.itemCount},()=>({status:'uncertain',note:'Replacement page had no matching durable submission journal; manual reconciliation required'})));clearJournal();return;}const {batch}=next;if(!batch){setStage('ready for next batch');return;}
       writeJournal({batchId:batch.id,itemCount:batch.items.length,phase:'leased'});
       setStage(`uploading ${batch.items.length}; ${status.queued} queued`);
-      try{const outcomes=await withTimeout(upload(batch),180000);await reportResult(batch.id,outcomes);clearJournal();setStage(`${outcomes.filter(x=>x.status==='submitted').length}/${outcomes.length} submitted`);location.href=workerUrl('/submit/sticker');}
+      try{const outcomes=await upload(batch);await reportResult(batch.id,outcomes);clearJournal();setStage(`${outcomes.filter(x=>x.status==='submitted').length}/${outcomes.length} submitted`);location.href=workerUrl('/submit/sticker');}
       catch(error){
         const saved=readJournal();if(saved?.batchId===batch.id&&saved.phase==='outcomes'&&Array.isArray(saved.outcomes)){setStage(`result acknowledgement pending: ${error.message}`);console.error('[Emoji queue]',error);return;}
         const status=batch.submittedToSite?'uncertain':'retry';

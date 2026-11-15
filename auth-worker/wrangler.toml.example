@@ -1,0 +1,15 @@
+name = "emote-forge-access"
+main = "worker.mjs"
+compatibility_date = "2026-11-15"
+
+[vars]
+DISCORD_CLIENT_ID = "1571592048576831691"
+DISCORD_GUILD_ID = "replace-with-emote-forge-server-id"
+ALLOWED_RETURN_ORIGINS = "https://itschase.github.io"
+
+# Add these with `wrangler secret put`; never commit their values:
+# DISCORD_CLIENT_SECRET
+# DISCORD_BOT_TOKEN
+# STATE_SECRET
+# SIGNING_PRIVATE_JWK
+# SIGNING_PUBLIC_JWK

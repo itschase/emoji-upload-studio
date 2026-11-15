@@ -1,0 +1,20 @@
+name = "emote-forge-studio"
+main = "auth-worker/worker.mjs"
+compatibility_date = "2026-11-15"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[vars]
+DISCORD_CLIENT_ID = "1571592048576831691"
+DISCORD_GUILD_ID = "replace-with-emote-forge-server-id"
+ALLOWED_RETURN_ORIGINS = "https://emote-forge-studio.workers.dev"
+
+# Configure these as encrypted Cloudflare Worker secrets:
+# DISCORD_CLIENT_SECRET
+# DISCORD_BOT_TOKEN
+# STATE_SECRET
+# SIGNING_PRIVATE_JWK
+# SIGNING_PUBLIC_JWK

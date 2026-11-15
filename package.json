@@ -1,1 +1,36 @@
-{"name":"emoji-upload-queue","private":true,"type":"module","scripts":{"start":"node launcher.mjs start","stop":"node launcher.mjs stop","restart":"node launcher.mjs restart","status":"node launcher.mjs status","server":"node server.mjs","test":"node --test"}}
+{
+  "name": "emoji-upload-studio",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build && node scripts/copy-static.mjs",
+    "deploy": "npm run build && wrangler deploy",
+    "start": "node launcher.mjs start",
+    "stop": "node launcher.mjs stop",
+    "restart": "node launcher.mjs restart",
+    "status": "node launcher.mjs status",
+    "server": "node server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-dropdown-menu": "^2.1.16",
+    "@radix-ui/react-tabs": "^1.1.13",
+    "@radix-ui/react-tooltip": "^1.2.8",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2",
+    "wrangler": "^4.162.0"
+  }
+}

@@ -1,1 +1,12 @@
-{"root":"D:\\path\\to\\your\\emoji-folders"}
+{
+  "root": "D:\\path\\to\\your\\emoji-folders",
+  "discordAuth": {
+    "enabled": false,
+    "serverName": "Emote Forge",
+    "clientId": "1571592048576831691",
+    "guildId": "",
+    "serviceUrl": "https://auth.example.com",
+    "publicKeyJwk": {},
+    "offlineGraceHours": 24
+  }
+}

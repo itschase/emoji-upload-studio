@@ -1,4 +1,8 @@
 config.local.json
+node_modules/
+dist/
+*.tsbuildinfo
+.wrangler-dry-run/
 server.pid
 server.out.log
 server.err.log
