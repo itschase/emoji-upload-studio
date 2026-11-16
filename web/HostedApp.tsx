@@ -73,7 +73,7 @@ const authBase = (import.meta.env.VITE_AUTH_URL || location.origin).replace(
   /\/$/,
   "",
 );
-const studioVersion = "0.9.1";
+const studioVersion = "0.9.2";
 const userscriptInstallUrl =
   "https://update.greasyfork.org/scripts/605370/Emojigg%20Upload%20Studio%20Worker.user.js";
 const compareVersions = (left: string, right: string) => {
@@ -389,7 +389,7 @@ function Overview({
           />
           <Feature
             ok
-            title="Parallel workers"
+            title="Parallel upload tabs"
             body="Only active batches are sent to signed-in Emoji.gg tabs."
           />
           <Feature
@@ -724,7 +724,7 @@ function Uploads({
     setPaused(false);
     if (opened.some((worker) => !worker.win))
       setNotice(
-        "Some worker tabs were blocked. Allow popups for this Studio and start again.",
+        "Some Emoji.gg upload tabs were blocked. Allow popups for Upload Studio and start again.",
       );
   };
   return (
@@ -805,9 +805,9 @@ function Uploads({
       </section>
       <div className="two-col">
         <Card>
-          <Title eyebrow="Workers" title="Parallel uploads" />
+          <Title eyebrow="Upload tabs" title="Parallel uploads" />
           <label>
-            Worker tabs
+            Emoji.gg upload tabs
             <select
               value={workers}
               onChange={(event) => setWorkerCount(Number(event.target.value))}
@@ -850,7 +850,7 @@ function Uploads({
       </div>
       <Card>
         <Title
-          eyebrow="Worker tabs"
+          eyebrow="Emoji.gg upload tabs"
           title={`${workerState.filter((worker) => worker.ready).length}/${workerState.length} ready`}
         />
         <div className="worker-grid">
@@ -859,7 +859,7 @@ function Uploads({
               <div className="worker-card" key={worker.id}>
                 <span className="worker-index">{index + 1}</span>
                 <div>
-                  <strong>Worker {index + 1}</strong>
+                  <strong>Upload tab {index + 1}</strong>
                   <small>{worker.stage}</small>
                 </div>
                 <Badge
@@ -871,7 +871,7 @@ function Uploads({
             ))
           ) : (
             <Empty
-              title="No workers open"
+              title="No upload tabs open"
               body="Choose a tab count and start the queue."
             />
           )}
@@ -1248,7 +1248,7 @@ function SettingsView({ access }: { access: Access }) {
           <ol className="setup-steps">
             <li>Install the Tampermonkey browser extension.</li>
             <li>
-              Click <strong>{bridge === "outdated" ? "Update userscript" : "Install userscript"}</strong> and confirm the {bridge === "outdated" ? "replacement" : "script"} in Tampermonkey.
+              Click <strong>{bridge === "outdated" ? "Update from Studio" : "Install userscript"}</strong> and confirm the {bridge === "outdated" ? "replacement" : "script"} in Tampermonkey. You can also update through Greasy Fork.
             </li>
             <li>
               Return here, reload this page, then click <strong>Check connection</strong>.
@@ -1257,12 +1257,22 @@ function SettingsView({ access }: { access: Access }) {
           <div className="settings-actions">
             <a
               className="button button-primary"
-              href={userscriptInstallUrl}
+              href={bridge === "outdated" ? "./uploader.user.js" : userscriptInstallUrl}
               target="_blank"
               rel="noreferrer"
             >
-              <Download size={16} /> {bridge === "outdated" ? "Update userscript" : "Install userscript"}
+              <Download size={16} /> {bridge === "outdated" ? "Update from Studio" : "Install userscript"}
             </a>
+            {bridge === "outdated" && (
+              <a
+                className="button button-ghost"
+                href={userscriptInstallUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink size={16} /> Update through Greasy Fork
+              </a>
+            )}
             <Button onClick={checkBridge} disabled={bridge === "checking"}>
               <RefreshCw size={16} /> Check connection
             </Button>
@@ -1275,7 +1285,7 @@ function SettingsView({ access }: { access: Access }) {
           )}
           {bridge === "outdated" && (
             <div className="inline-notice warning">
-              Worker v{bridgeVersion || "unknown"} is installed, but Studio v{studioVersion} is required. Update it through Tampermonkey before uploading.
+              The installed userscript is v{bridgeVersion || "unknown"}. Upload Studio v{studioVersion} requires userscript v{studioVersion}; these separate components must use matching versions before uploading.
             </div>
           )}
         </Card>
@@ -1283,7 +1293,7 @@ function SettingsView({ access }: { access: Access }) {
           <Title eyebrow="Studio" title="Workspace" />
           <dl className="settings-list">
             <div>
-              <dt>Version</dt>
+              <dt>Upload Studio version</dt>
               <dd>
                 <code>{studioVersion}</code>
               </dd>

@@ -1,6 +1,6 @@
 # Emote Forge Upload Studio
 
-Emote Forge Upload Studio is a hosted, browser-based workspace for preparing and submitting large Emoji.gg libraries. It imports up to 500 PNG or GIF files at once, pairs them with CSV metadata, lets the user correct every record, and coordinates up to ten Emoji.gg worker tabs in parallel.
+Emote Forge Upload Studio is a hosted, browser-based workspace for preparing and submitting large Emoji.gg libraries. It imports up to 500 PNG or GIF files at once, pairs them with CSV metadata, lets the user correct every record, and coordinates up to ten Emoji.gg upload tabs in parallel.
 
 The application does **not** receive or store imported media. Images, manifests, queue state, and recovery records live in IndexedDB in the user's browser. During an active run, each worker receives only its current batch directly from the Studio page and submits it through Emoji.gg's real form.
 
@@ -19,8 +19,8 @@ Until verification succeeds, the application exposes only the access screen. Imp
 2. Open the Studio and authorize Discord membership in Emote Forge.
 3. Import image files and, optionally, an `upload_manifest.csv`.
 4. Review names, tags, categories, licenses, descriptions, and previews.
-5. Allow popups for the Studio, choose 1–10 workers, and start the queue.
-6. Keep the Studio open while workers process independent batches of up to ten.
+5. Allow popups for the Studio, choose 1–10 upload tabs, and start the queue.
+6. Keep the Studio open while upload tabs process independent batches of up to ten.
 
 No Node installation, terminal, local server, or desktop companion is required for normal users.
 
@@ -29,7 +29,7 @@ No Node installation, terminal, local server, or desktop companion is required f
 - **Browser-local library:** media and queue data use IndexedDB on the current device and browser profile.
 - **CSV-assisted imports:** exact-filename metadata matching with generated starter metadata when a CSV is omitted.
 - **Metadata editor:** title, prioritized tags, category, license, description, preview, and record removal.
-- **Parallel worker orchestration:** 1–10 Emoji.gg tabs with non-overlapping batches of at most ten.
+- **Parallel upload-tab orchestration:** 1–10 Emoji.gg tabs with non-overlapping batches of at most ten.
 - **Safe result handling:** successful items become `submitted`; explicit failures retry up to three times; ambiguous outcomes become `uncertain` instead of being silently duplicated.
 - **Crash recovery:** records left `inflight` after the Studio closes become `uncertain` on the next launch.
 - **Combined statistics:** local asset/pack/status totals plus public Emoji.gg profile counts for emojis, stickers, packs, downloads, rank, and loaded-card completeness.
@@ -42,7 +42,7 @@ No Node installation, terminal, local server, or desktop companion is required f
 | --- | --- |
 | Imported PNG/GIF files | Browser IndexedDB |
 | CSV metadata and queue state | Browser IndexedDB |
-| Active batch transfer | Directly between the Studio and Emoji.gg worker tab |
+| Active batch transfer | Directly between the Studio and Emoji.gg upload tab |
 | Final media submission | Emoji.gg |
 | Discord identity and membership | Discord and the Emote Forge access Worker |
 | Discord client secret, bot token, signing key | Encrypted Cloudflare Worker secrets |
@@ -62,7 +62,7 @@ Download `upload_manifest.template.csv` from the Studio. Rows are matched by exa
 | `category_value` | Emoji.gg category number `1`–`23` |
 | `license` | `CC BY 4.0`, `Basic`, `WTFPL`, or `Streamer` |
 
-The worker tests tag candidates against Emoji.gg's tag input and keeps up to ten accepted tags. It hashes each site preview and matches it to the original file before entering metadata, so reordered uploads still receive the correct fields.
+The userscript tests tag candidates against Emoji.gg's tag input and keeps up to ten accepted tags. It hashes each site preview and matches it to the original file before entering metadata, so reordered uploads still receive the correct fields.
 
 ## Architecture
 
@@ -77,12 +77,12 @@ Cloudflare Workers Build
                     ▼
 Browser Studio (IndexedDB)
         │ File objects via postMessage
-        ├── Emoji.gg worker tab 1
-        ├── Emoji.gg worker tab 2
-        └── ... up to worker tab 10
+        ├── Emoji.gg upload tab 1
+        ├── Emoji.gg upload tab 2
+        └── ... up to upload tab 10
 ```
 
-Workers open from a direct user click so the browser can grant popup permission. Each worker validates the Studio origin and random run session before accepting a batch. The Studio validates origin, source window, session, worker ID, and batch ID before accepting results.
+Upload tabs open from a direct user click so the browser can grant popup permission. Each upload tab validates the Studio origin and random run session before accepting a batch. The Studio validates origin, source window, session, upload-tab ID, and batch ID before accepting results.
 
 ## Cloudflare deployment
 

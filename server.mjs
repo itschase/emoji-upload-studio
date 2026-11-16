@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {checkUpdate,applyUpdate} from './update.mjs';
 
-const STUDIO_VERSION='0.9.1';
+const STUDIO_VERSION='0.9.2';
 const MAX_AUTOMATIC_RETRIES=3;
 const MAX_UNCERTAIN_BEFORE_PAUSE=10;
 
@@ -154,9 +154,9 @@ if(state.leases?.length){
 }
 await save();
 async function createQueue(limit, folderFilter='', workerCount=1) {
-  if(!readyWorkers())throw new Error('Worker 0.4.3 or newer is required before uploading. Update Tampermonkey and reload the Emoji.gg tab.');
+  if(!readyWorkers())throw new Error(`Userscript ${STUDIO_VERSION} must match Upload Studio ${STUDIO_VERSION} before uploading. Update it in Tampermonkey and reload the Emoji.gg tab.`);
   if(!Number.isInteger(limit)||limit<0||limit>100000)throw new Error('Choose 0 (all) or 1–100000 images');
-  if(!Number.isInteger(workerCount)||workerCount<1||workerCount>10)throw new Error('Choose 1–10 worker tabs');
+  if(!Number.isInteger(workerCount)||workerCount<1||workerCount>10)throw new Error('Choose 1–10 Emoji.gg upload tabs');
   if(state.running && (state.cursor<state.queued.length||state.leases.length))throw new Error('Finish the current queue before starting another');
   if(state.leases.length)throw new Error('A batch is already in flight');
   const dirs=(await fs.readdir(ROOT,{withFileTypes:true})).filter(d=>d.isDirectory()&&!d.name.startsWith('.')&&(!folderFilter||d.name===folderFilter)).map(d=>d.name).sort();
@@ -266,7 +266,7 @@ const server=http.createServer(async(req,res)=>{
     if(u.pathname==='/api/access/claim'&&req.method==='POST')return json(res,200,await serial(async()=>claimDiscordAccess((await body(req)).token)));
     if(u.pathname==='/api/enable-pairing'&&req.method==='POST'){pairingUntil=Date.now()+60000;return json(res,200,{ok:true,expiresInSeconds:60});}
     if(u.pathname==='/api/hello'&&req.method==='POST')return await serial(async()=>{
-      const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Worker update required');
+      const hello=await body(req);if(hello.version!=='0.4.0'||!uuid(hello.clientId))throw new Error('Userscript update required');
       const installationId=uuid(hello.installationId)?hello.installationId:`legacy-${hello.clientId}`,pageInstanceId=uuid(hello.pageInstanceId)?hello.pageInstanceId:`legacy-page-${hello.clientId}`,pageStartedAt=Number(hello.pageStartedAt)||0,scriptVersion=String(hello.scriptVersion||'older').slice(0,24),reloadRequired=!versionMatches(scriptVersion);
       expectedWorkers.delete(hello.clientId);
       let worker=workers.get(hello.clientId);const activeLease=state.leases.find(lease=>lease.owner===hello.clientId),differentInstance=worker?.pageInstanceId&&worker.pageInstanceId!==pageInstanceId;
@@ -296,25 +296,25 @@ const server=http.createServer(async(req,res)=>{
       res.writeHead(200,{'Content-Type':/\.gif$/i.test(file)?'image/gif':'image/png','Content-Length':stat.size,'Cache-Control':'no-store'});return createReadStream(file).pipe(res);
     }
     if(u.pathname==='/api/start'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');requireDiscordAccess();const input=await body(req),job=await createQueue(Number(input.limit),String(input.folder||''),Number(input.workers||1));return json(res,200,{queued:job.queued.length,skipped:job.skipped});});
-    if(u.pathname==='/api/workers'&&req.method==='POST')return await serial(async()=>{const input=await body(req),count=Number(input.workers);if(!Number.isInteger(count)||count<1||count>10)throw new Error('Choose 1–10 worker tabs');state.workers=count;expireWorkerReservations();const connected=activeWorkers(),openFirst=connected===0,targetReservations=Math.max(0,count-connected-(openFirst?1:0));while(expectedWorkers.size>targetReservations)expectedWorkers.delete(expectedWorkers.keys().next().value);while(expectedWorkers.size<targetReservations)expectedWorkers.set(crypto.randomUUID(),{expiresAt:Date.now()+60000,dispatched:false});state.spawnPending=expectedWorkers.size;nextSpawnReconcileAt=0;await save();return json(res,200,{workers:count,spawnPending:expectedWorkers.size,openFirst,reusing:Math.min(count,connected)});});
+    if(u.pathname==='/api/workers'&&req.method==='POST')return await serial(async()=>{const input=await body(req),count=Number(input.workers);if(!Number.isInteger(count)||count<1||count>10)throw new Error('Choose 1–10 Emoji.gg upload tabs');state.workers=count;expireWorkerReservations();const connected=activeWorkers(),openFirst=connected===0,targetReservations=Math.max(0,count-connected-(openFirst?1:0));while(expectedWorkers.size>targetReservations)expectedWorkers.delete(expectedWorkers.keys().next().value);while(expectedWorkers.size<targetReservations)expectedWorkers.set(crypto.randomUUID(),{expiresAt:Date.now()+60000,dispatched:false});state.spawnPending=expectedWorkers.size;nextSpawnReconcileAt=0;await save();return json(res,200,{workers:count,spawnPending:expectedWorkers.size,openFirst,reusing:Math.min(count,connected)});});
     if(u.pathname==='/api/pause'&&req.method==='POST')return await serial(async()=>{state.paused=true;await save();return json(res,200,{ok:true});});
-    if(u.pathname==='/api/resume'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');requireDiscordAccess();if(!readyWorkers())throw new Error(`Worker ${STUDIO_VERSION} is required before resuming`);state.uncertainThisRun=0;state.message='Queue resumed with a fresh ambiguity safety window';state.paused=false;state.running=state.cursor<state.queued.length||state.leases.length>0;await save();return json(res,200,{ok:true});});
+    if(u.pathname==='/api/resume'&&req.method==='POST')return await serial(async()=>{if(shuttingDown)throw new Error('Studio is shutting down');requireDiscordAccess();if(!readyWorkers())throw new Error(`Userscript ${STUDIO_VERSION} must match Upload Studio ${STUDIO_VERSION} before resuming`);state.uncertainThisRun=0;state.message='Queue resumed with a fresh ambiguity safety window';state.paused=false;state.running=state.cursor<state.queued.length||state.leases.length>0;await save();return json(res,200,{ok:true});});
     if(u.pathname==='/api/shutdown'&&req.method==='POST')return await serial(async()=>{shuttingDown=true;state.paused=true;await save();json(res,200,{ok:true,draining:state.leases.length});const timer=setInterval(()=>{if(!state.leases.length){clearInterval(timer);server.close();}},500);});
     if(u.pathname==='/api/next')return await serial(async()=>{
-      const owner=workerOwner(req);if(!owner||!workers.get(owner)?.supportsHeartbeat)return json(res,403,{error:'Worker 0.4.3 or newer required'});
+      const owner=workerOwner(req);if(!owner||!workers.get(owner)?.supportsHeartbeat)return json(res,403,{error:'Updated userscript required'});
       const existing=state.leases.find(x=>x.owner===owner);if(existing)return json(res,200,{batch:null,blocked:{id:existing.id,itemCount:existing.items.length,issuedAt:existing.issuedAt}});
       if(!state.running||state.paused)return json(res,200,{batch:null});
       if(state.leases.length>=state.workers||state.cursor>=state.queued.length)return json(res,200,{batch:null});
       const lease={id:crypto.randomUUID(),owner,issuedAt:Date.now(),items:state.queued.slice(state.cursor,state.cursor+10)};state.cursor+=lease.items.length;state.leases.push(lease);await save();return json(res,200,{batch:lease});
     });
     if(u.pathname==='/api/file'){
-      const owner=workerOwner(req);if(!owner)return json(res,403,{error:'Updated worker required'});
+      const owner=workerOwner(req);if(!owner)return json(res,403,{error:'Updated userscript required'});
       const batch=state.leases.find(x=>x.id===u.searchParams.get('batch')&&x.owner===owner);const index=Number(u.searchParams.get('index'));const item=batch?.items[index];if(!item)return json(res,404,{error:'File not leased'});
       const file=path.join(ROOT,item.folder,item.filename);const stat=await fs.stat(file);if(stat.size>256*1024)throw new Error('File grew above 256 KB');
       res.writeHead(200,{'Content-Type':/\.gif$/i.test(file)?'image/gif':'image/png','Content-Length':stat.size,'Cache-Control':'no-store'});return createReadStream(file).pipe(res);
     }
     if(u.pathname==='/api/result'&&req.method==='POST')return await serial(async()=>{
-      const owner=workerOwner(req);if(!owner)return json(res,403,{error:'Updated worker required'});
+      const owner=workerOwner(req);if(!owner)return json(res,403,{error:'Updated userscript required'});
       const result=await body(req);const lease=state.leases.find(x=>x.id===result.id&&x.owner===owner);if(!lease){const completed=completedLeases.get(result.id);if(completed?.owner===owner)return json(res,200,{ok:true,duplicate:true});throw new Error('Unknown batch');}
       if(!Array.isArray(result.outcomes)||result.outcomes.length!==lease.items.length)throw new Error('Outcome count mismatch');
       const outcomes=result.outcomes.map(o=>({status:o.status==='submitted'?'submitted':o.status==='retry'?'retry':'uncertain',note:o.status==='submitted'?'':String(o.note||'').slice(0,300)}));
