@@ -1,0 +1,53 @@
+name: Publish userscript bridge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - uploader.user.js
+      - .github/workflows/publish-userscript.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-userscript-bridge
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Upload Studio
+        uses: actions/checkout@v4
+
+      - name: Configure distribution key
+        env:
+          DEPLOY_KEY: ${{ secrets.USERSCRIPT_DEPLOY_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/emote_forge_userscript
+          chmod 600 ~/.ssh/emote_forge_userscript
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<'EOF'
+          Host github.com
+            IdentityFile ~/.ssh/emote_forge_userscript
+            IdentitiesOnly yes
+          EOF
+
+      - name: Publish public userscript mirror
+        run: |
+          git clone git@github.com:itschase/emoji-upload-studio-userscript.git distribution
+          cp uploader.user.js distribution/uploader.user.js
+          cd distribution
+          if git diff --quiet -- uploader.user.js; then
+            echo "Public userscript is already current."
+            exit 0
+          fi
+          git config user.name "Emote Forge Release Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uploader.user.js
+          version=$(sed -n 's|^// @version[[:space:]]*||p' uploader.user.js | head -n 1)
+          git commit -m "Publish userscript v${version}"
+          git push origin main
