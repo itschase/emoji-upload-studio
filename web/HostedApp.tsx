@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -39,6 +39,7 @@ import {
   parseCsv,
   recoverInflight,
   removeAsset,
+  sanitizeEmojiName,
   saveAsset,
   saveAssets,
 } from "./browser-store";
@@ -73,7 +74,7 @@ const authBase = (import.meta.env.VITE_AUTH_URL || location.origin).replace(
   /\/$/,
   "",
 );
-const studioVersion = "0.9.2";
+const studioVersion = "0.9.3";
 const userscriptInstallUrl =
   "https://update.greasyfork.org/scripts/605370/Emojigg%20Upload%20Studio%20Worker.user.js";
 const compareVersions = (left: string, right: string) => {
@@ -422,7 +423,7 @@ function Library({
 }) {
   const [query, setQuery] = useState(""),
     [status, setStatus] = useState("all"),
-    [selected, setSelected] = useState<BrowserAsset | null>(null);
+    [selectedId, setSelectedId] = useState<string | null>(null);
   const filtered = assets.filter(
     (asset) =>
       (status === "all" || asset.status === status) &&
@@ -472,7 +473,11 @@ function Library({
               </thead>
               <tbody>
                 {filtered.map((asset) => (
-                  <tr key={asset.id}>
+                  <Fragment key={asset.id}>
+                  <tr
+                    className={selectedId === asset.id ? "asset-row editing" : "asset-row"}
+                    onClick={() => setSelectedId(selectedId === asset.id ? null : asset.id)}
+                  >
                     <td>
                       <div className="asset-cell">
                         <img
@@ -506,12 +511,29 @@ function Library({
                     <td>
                       <Button
                         variant="ghost"
-                        onClick={() => setSelected(asset)}
+                        aria-expanded={selectedId === asset.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedId(selectedId === asset.id ? null : asset.id);
+                        }}
                       >
-                        Edit
+                        {selectedId === asset.id ? "Close" : "Edit"}
                       </Button>
                     </td>
                   </tr>
+                  {selectedId === asset.id && (
+                    <tr className="asset-editor-row">
+                      <td colSpan={5}>
+                        <InlineAssetEditor
+                          key={asset.id}
+                          asset={asset}
+                          close={() => setSelectedId(null)}
+                          after={refresh}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -523,11 +545,6 @@ function Library({
           />
         )}
       </Card>
-      <AssetEditor
-        asset={selected}
-        close={() => setSelected(null)}
-        after={refresh}
-      />
     </div>
   );
 }
@@ -1437,32 +1454,32 @@ function ImportDialog({
   );
 }
 
-function AssetEditor({
+function InlineAssetEditor({
   asset,
   close,
   after,
 }: {
-  asset: BrowserAsset | null;
+  asset: BrowserAsset;
   close: () => void;
   after: () => void;
 }) {
-  const [draft, setDraft] = useState<BrowserAsset | null>(asset),
-    [busy, setBusy] = useState(false);
-  useEffect(() => setDraft(asset), [asset]);
-  if (!draft)
-    return (
-      <Dialog open={false} onOpenChange={() => {}} title="" children={null} />
-    );
+  const [draft, setDraft] = useState<BrowserAsset>(asset),
+    [busy, setBusy] = useState<"save" | "delete" | "">(""),
+    [notice, setNotice] = useState("");
+  useEffect(() => {
+    setDraft(asset);
+    setBusy("");
+    setNotice("");
+  }, [asset.id]);
   const set = (key: keyof BrowserAsset, value: string) =>
     setDraft({ ...draft, [key]: value });
   return (
-    <Dialog
-      open={Boolean(asset)}
-      onOpenChange={(value) => !value && close()}
-      title={draft.filename}
-      description={`${draft.pack} · ${draft.status}`}
-    >
-      <div className="editor-layout">
+    <div className="inline-editor-shell">
+      <div className="inline-editor-head">
+        <div><strong>{draft.filename}</strong><small>{draft.pack} · {draft.status}</small></div>
+        <Button variant="ghost" onClick={close} aria-label="Close editor"><X size={16} /></Button>
+      </div>
+      <div className="editor-layout inline-editor-layout">
         <img
           className="preview large"
           src={URL.createObjectURL(draft.file)}
@@ -1473,8 +1490,12 @@ function AssetEditor({
             Name
             <input
               value={draft.title}
-              onChange={(event) => set("title", event.target.value)}
+              onChange={(event) => set("title", sanitizeEmojiName(event.target.value))}
+              onBlur={() => set("title", draft.title.trim())}
+              pattern="[A-Za-z0-9 ]+"
+              title="Use letters, numbers, and spaces only"
             />
+            <small>Letters, numbers, and spaces only.</small>
           </label>
           <label>
             Prioritized tags
@@ -1517,35 +1538,54 @@ function AssetEditor({
             />
             <small>{draft.description.length}/2500</small>
           </label>
+          {notice && <div className={notice === "Changes saved." ? "inline-notice good" : "inline-notice"}>{notice}</div>}
           <div className="dialog-actions split">
             <Button
               variant="danger"
               onClick={async () => {
-                setBusy(true);
-                await removeAsset(draft.id);
-                close();
-                after();
+                if (!confirm(`Delete ${draft.filename} from this browser library?`)) return;
+                setBusy("delete");
+                setNotice("");
+                try {
+                  await removeAsset(draft.id);
+                  close();
+                  after();
+                } catch (error) {
+                  setNotice((error as Error).message);
+                  setBusy("");
+                }
               }}
-              disabled={busy}
+              disabled={Boolean(busy)}
             >
-              <Trash2 size={16} /> Remove
+              {busy === "delete" ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />} Delete
             </Button>
             <Button
               variant="primary"
               onClick={async () => {
-                setBusy(true);
-                await saveAsset(draft);
-                close();
-                after();
+                setBusy("save");
+                setNotice("");
+                try {
+                  const normalized = sanitizeEmojiName(draft.title).trim();
+                  if (!normalized) throw new Error("Name must contain at least one letter or number.");
+                  const next = { ...draft, title: normalized };
+                  setDraft(next);
+                  await saveAsset(next);
+                  after();
+                  setNotice("Changes saved.");
+                } catch (error) {
+                  setNotice((error as Error).message);
+                } finally {
+                  setBusy("");
+                }
               }}
-              disabled={busy}
+              disabled={Boolean(busy)}
             >
-              <Save size={16} /> Save
+              {busy === "save" ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />} Save
             </Button>
           </div>
         </div>
       </div>
-    </Dialog>
+    </div>
   );
 }
 

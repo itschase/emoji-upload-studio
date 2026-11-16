@@ -8,6 +8,7 @@ if(pendingDiscordReceipt)history.replaceState(null,'',location.pathname+location
 export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs))
 export const categories=['Original Style','TV / Movie','Meme','Anime','Celebrity','Blobs','Thinking','Animated','NSFW','Gaming','Letters','Other','Pepe','Logos','Cute','Utility','Animals','Recolors','Flags','Hearts','Pixel Art','Reactions','Aesthetic']
 export const licenses=['CC BY 4.0','Basic','WTFPL','Streamer']
+export const sanitizeEmojiName=(value:string)=>value.replace(/[^A-Za-z0-9 ]+/g,' ').replace(/\s+/g,' ').trimStart().slice(0,100)
 export async function api<T=any>(route:string,data?:unknown):Promise<T>{
   const response=await fetch(`/api/${route}`,{method:data===undefined?'GET':'POST',headers:{'X-Queue-Token':window.__QUEUE_TOKEN__||'','Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)})
   const result=await response.json().catch(()=>({error:`HTTP ${response.status}`}))

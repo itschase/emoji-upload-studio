@@ -8,3 +8,5 @@ server.out.log
 server.err.log
 .launcher-test/
 .ui-review/
+.userscript-deploy-key
+.userscript-deploy-key.pub
