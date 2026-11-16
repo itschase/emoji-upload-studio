@@ -74,7 +74,7 @@ const authBase = (import.meta.env.VITE_AUTH_URL || location.origin).replace(
   /\/$/,
   "",
 );
-const studioVersion = "0.9.3";
+const studioVersion = "0.9.4";
 const userscriptInstallUrl =
   "https://update.greasyfork.org/scripts/605370/Emojigg%20Upload%20Studio%20Worker.user.js";
 const compareVersions = (left: string, right: string) => {
