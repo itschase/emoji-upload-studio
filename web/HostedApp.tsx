@@ -1296,6 +1296,19 @@ function ImportDialog({
       const assets = files.map((file) =>
         makeAsset(safePack, file, byName.get(file.name.toLowerCase())),
       );
+      const titleGroups = new Map<string, BrowserAsset[]>();
+      for (const asset of assets) {
+        const key = asset.title.toLowerCase();
+        titleGroups.set(key, [...(titleGroups.get(key) || []), asset]);
+      }
+      for (const group of titleGroups.values()) {
+        if (group.length < 2) continue;
+        group.forEach((asset, index) => {
+          const identity =
+            asset.filename.match(/^\d+/)?.[0] || String(index + 1);
+          asset.title = `${asset.title} ${identity}`.slice(0, 100);
+        });
+      }
       await saveAssets(assets);
       setPack("");
       setFiles([]);
