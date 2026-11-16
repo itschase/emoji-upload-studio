@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Emoji.gg Upload Studio Worker
 // @namespace    local.emoji.upload.queue
-// @version      0.9.0
+// @version      0.9.1
 // @description  Connects Emoji.gg worker tabs to the browser-based Upload Studio and submits prepared batches of ten.
 // @license      MIT
 // @homepageURL  https://emote-forge.itschase.workers.dev/
@@ -23,13 +23,13 @@
   'use strict';
   const base = 'http://127.0.0.1:43861';
   if(location.hostname==='emote-forge.itschase.workers.dev'){
-    const announce=()=>window.postMessage({type:'EMOTE_FORGE_BRIDGE_STATUS',source:'userscript',version:'0.9.0',active:true},location.origin);
+    const announce=()=>window.postMessage({type:'EMOTE_FORGE_BRIDGE_STATUS',source:'userscript',version:'0.9.1',active:true},location.origin);
     addEventListener('message',event=>{if(event.source===window&&event.data?.type==='EMOTE_FORGE_BRIDGE_PROBE')announce()});
     announce();return;
   }
   let token = GM_getValue('queueToken','');
   const initialParams=new URLSearchParams(location.search),probeSession=initialParams.get('browser_studio_probe')||'',probeOrigin=initialParams.get('browser_studio_origin')||'';
-  if(probeSession&&probeOrigin){let trusted='';try{trusted=new URL(probeOrigin).origin}catch{}if(trusted){window.opener?.postMessage({type:'EMOTE_FORGE_BRIDGE_STATUS',session:probeSession,version:'0.9.0',active:true},trusted);}return;}
+  if(probeSession&&probeOrigin){let trusted='';try{trusted=new URL(probeOrigin).origin}catch{}if(trusted){window.opener?.postMessage({type:'EMOTE_FORGE_BRIDGE_STATUS',session:probeSession,version:'0.9.1',active:true},trusted);}return;}
   if(location.pathname.startsWith('/user/')){
     const profileParams=new URLSearchParams(location.search),profileSession=profileParams.get('browser_studio_profile_session')||'',profileOrigin=profileParams.get('browser_studio_origin')||'';
     let trustedProfileOrigin='';if(profileSession&&profileOrigin){try{trustedProfileOrigin=new URL(profileOrigin).origin}catch{}}
@@ -41,7 +41,7 @@
   }
   if(!['/submit','/submit/sticker'].includes(location.pathname))return;
   if(document.documentElement.dataset.emojiUploadStudioWorker)return;
-  document.documentElement.dataset.emojiUploadStudioWorker='0.9.0';
+  document.documentElement.dataset.emojiUploadStudioWorker='0.9.1';
   let installationId=GM_getValue('installationId','');if(!/^[0-9a-f-]{36}$/i.test(installationId)){installationId=crypto.randomUUID();GM_setValue('installationId',installationId);}
   const workerParams=new URLSearchParams(location.search);if(workerParams.has('upload_studio_worker')){sessionStorage.setItem('uploadStudioManaged','1');sessionStorage.setItem('uploadStudioClientId',workerParams.get('upload_studio_worker'));}const openedByStudio=sessionStorage.getItem('uploadStudioManaged')==='1';
   let clientId=workerParams.get('upload_studio_worker')||sessionStorage.getItem('uploadStudioClientId')||crypto.randomUUID();if(!/^[0-9a-f-]{36}$/i.test(clientId))clientId=crypto.randomUUID();if(openedByStudio)sessionStorage.setItem('uploadStudioClientId',clientId);
@@ -80,6 +80,16 @@
   function wait(check, timeout = 30000) { return new Promise((resolve, reject) => { const end = Date.now() + timeout; const timer = setInterval(() => { const value = check(); if (value) { clearInterval(timer); resolve(value); } else if (Date.now() > end) { clearInterval(timer); reject(new Error('Site did not advance in time')); } }, 150); }); }
   function setValue(el, value) { const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto,'value').set.call(el,value); el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); }
   async function digest(blob) { const bytes = await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()); return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join(''); }
+  async function visualDigest(blob) {
+    const bitmap=await createImageBitmap(blob),canvas=document.createElement('canvas');canvas.width=64;canvas.height=64;
+    const context=canvas.getContext('2d',{willReadFrequently:true});context.clearRect(0,0,64,64);context.drawImage(bitmap,0,0,64,64);bitmap.close?.();
+    const bytes=context.getImageData(0,0,64,64).data;return digest(new Blob([bytes.buffer]));
+  }
+  function uniqueRetryTitle(item) {
+    if(!/duplicate|already exists|already been submitted/i.test(item.note||''))return item.title;
+    const identity=(item.filename.match(/^\d+/)||[])[0]||item.filename.replace(/\.[^.]+$/,'').replace(/[^a-z0-9]+/gi,' ').trim().split(/\s+/).slice(-2).join(' ');
+    const suffix=identity?` ${identity}`:' Alternate';return `${item.title}${suffix}`.slice(0,100);
+  }
   async function addTags(form, tags) {
     const input = form.querySelector('.tag-input'); if(!input) throw new Error('Tag field missing');
     const accepted=[];
@@ -98,19 +108,26 @@
   }
   async function upload(batch,suppliedFiles=[]) {
     setStage(`loading ${batch.items.length} files`);
-    const files=[];const byHash=new Map();
-    for(let i=0;i<batch.items.length;i++) { const item=batch.items[i],blob=suppliedFiles[i]||await request(`file?batch=${encodeURIComponent(batch.id)}&index=${i}` ,undefined,'blob'); const file=blob instanceof File?blob:new File([blob],item.filename,{type:/\.gif$/i.test(item.filename)?'image/gif':'image/png'}); files.push(file); byHash.set(await digest(file),item); }
+    const files=[];const byHash=new Map(),byVisualHash=new Map();
+    const remember=(map,key,item)=>map.set(key,[...(map.get(key)||[]),item]);
+    for(let i=0;i<batch.items.length;i++) { const item=batch.items[i],blob=suppliedFiles[i]||await request(`file?batch=${encodeURIComponent(batch.id)}&index=${i}` ,undefined,'blob'); const file=blob instanceof File?blob:new File([blob],item.filename,{type:/\.gif$/i.test(item.filename)?'image/gif':'image/png'}); files.push(file);remember(byHash,await digest(file),item);try{remember(byVisualHash,await visualDigest(file),item)}catch(error){console.warn('[Emoji queue] visual fingerprint unavailable',item.filename,error)} }
     setStage('loading upload form');const input=await wait(()=>document.querySelector('#media-upload'));
     const transfer=new DataTransfer(); files.forEach(file=>transfer.items.add(file)); input.files=transfer.files; input.dispatchEvent(new Event('change',{bubbles:true}));
     setStage('waiting for previews');await wait(()=>document.querySelectorAll('.emojis-form').length===files.length && [...document.querySelectorAll('.emojis-form img[src^="blob:"]')].length===files.length,30000);
     const forms=[...document.querySelectorAll('.emojis-form')];
-    const ordered=[];
-    for(const form of forms){const src=form.querySelector('img[src^="blob:"]')?.src;if(!src)throw new Error('Missing preview image');const preview=await fetch(src).then(r=>r.blob());const item=byHash.get(await digest(preview));if(!item)throw new Error('Preview could not be matched to local image');ordered.push(item);}
+    const ordered=[],used=new Set();
+    for(const form of forms){
+      const src=form.querySelector('img[src^="blob:"]')?.src;if(!src)throw new Error('Missing preview image');const preview=await fetch(src).then(r=>r.blob());
+      let candidates=byHash.get(await digest(preview))||[],item=candidates.find(candidate=>!used.has(candidate));
+      if(!item){try{candidates=byVisualHash.get(await visualDigest(preview))||[];item=candidates.find(candidate=>!used.has(candidate))}catch(error){console.warn('[Emoji queue] preview fingerprint unavailable',error)}}
+      if(!item){const remaining=batch.items.filter(candidate=>!used.has(candidate));if(remaining.length===1)item=remaining[0];}
+      if(!item)throw new Error('Preview could not be matched safely to a local image');used.add(item);ordered.push(item);
+    }
     if(new Set(ordered).size!==files.length)throw new Error('Duplicate preview mapping');
     for(let i=0;i<forms.length;i++){
       const form=forms[i],item=ordered[i];
       setStage(`filling item ${i+1}/${forms.length}`);
-      setValue(form.querySelector('input[name="names[]"]'),item.title);
+      setValue(form.querySelector('input[name="names[]"]'),uniqueRetryTitle(item));
       form.querySelector('select[name="categories[]"]').value=item.category_value;form.querySelector('select[name="categories[]"]').dispatchEvent(new Event('change',{bubbles:true}));
       const license=form.querySelector('select[name="licenses[]"]');license.value=item.license==='CC BY 4.0'?'1':'0';license.dispatchEvent(new Event('change',{bubbles:true}));
       setValue(form.querySelector('textarea[name="descriptions[]"]'),item.description);
@@ -129,7 +146,7 @@
     const results=[...document.querySelectorAll('.list-group-item')].filter(e=>e.querySelector('strong'));
     if(results.length!==files.length)throw new Error(`Submission outcome uncertain: ${results.length}/${files.length} rows`);
     // Result order follows the site's displayed form order, which was mapped by preview hash.
-    const resultByItem=new Map(results.map((el,i)=>[ordered[i],{status:el.querySelector('.badge.bg-success')?'submitted':'retry',note:el.innerText.slice(-180)}]));
+    const resultByItem=new Map(results.map((el,i)=>{const note=el.innerText.slice(-300),duplicate=/duplicate|already exists|already been submitted/i.test(note);return [ordered[i],{status:el.querySelector('.badge.bg-success')?'submitted':'retry',note:duplicate?`Duplicate reported by Emoji.gg; retrying once with a unique name. ${note}`:note}]}));
     const outcomes=batch.items.map(item=>resultByItem.get(item));
     writeJournal({batchId:batch.id,itemCount:batch.items.length,phase:'outcomes',outcomes});
     return outcomes;
@@ -158,7 +175,7 @@
   async function announce(){
     if(helloPromise)return helloPromise;
     helloPromise=(async()=>{
-      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.9.0',heartbeat:true,clientId,installationId,pageInstanceId,pageStartedAt:performance.timeOrigin,stage:workerStage,progressAt,account:observedAccount()});
+      const hello=await request('hello',{version:'0.4.0',scriptVersion:'0.9.1',heartbeat:true,clientId,installationId,pageInstanceId,pageStartedAt:performance.timeOrigin,stage:workerStage,progressAt,account:observedAccount()});
       if(hello.reloadRequired){const key=`uploadStudioReloaded:${hello.minimumVersion}`;if(!sessionStorage.getItem(key)){sessionStorage.setItem(key,'1');setStage(`updating worker to ${hello.minimumVersion}`);location.reload();await new Promise(()=>{});}throw new Error(`Worker ${hello.minimumVersion} is required; update Tampermonkey and reload`);}
       if(hello.retire||hello.duplicate){duplicateMode=true;workerSession='';setStage(hello.retire?'surplus worker closing':hello.activeLease?'waiting for active page instance':'duplicate worker closing');if(hello.closeAllowed&&openedByStudio)setTimeout(closeWorkerTab,300);return hello;}
       duplicateMode=false;
