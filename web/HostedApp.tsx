@@ -73,6 +73,18 @@ const authBase = (import.meta.env.VITE_AUTH_URL || location.origin).replace(
   /\/$/,
   "",
 );
+const studioVersion = "0.9.1";
+const userscriptInstallUrl =
+  "https://update.greasyfork.org/scripts/605370/Emojigg%20Upload%20Studio%20Worker.user.js";
+const compareVersions = (left: string, right: string) => {
+  const a = left.split(".").map((value) => Number(value) || 0),
+    b = right.split(".").map((value) => Number(value) || 0);
+  for (let index = 0; index < Math.max(a.length, b.length); index++) {
+    if ((a[index] || 0) !== (b[index] || 0))
+      return (a[index] || 0) - (b[index] || 0);
+  }
+  return 0;
+};
 const localPreview =
   ["127.0.0.1", "localhost"].includes(location.hostname) &&
   !import.meta.env.VITE_AUTH_URL;
@@ -1106,9 +1118,17 @@ function AccessView({
 
 function SettingsView({ access }: { access: Access }) {
   const [bridge, setBridge] = useState<
-      "unknown" | "checking" | "active" | "inactive"
+      "unknown" | "checking" | "active" | "outdated" | "inactive"
     >("unknown"),
     [bridgeVersion, setBridgeVersion] = useState("");
+  const applyBridgeVersion = useCallback((version: string) => {
+    setBridgeVersion(version);
+    setBridge(
+      !version || compareVersions(version, studioVersion) < 0
+        ? "outdated"
+        : "active",
+    );
+  }, []);
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (
@@ -1117,29 +1137,46 @@ function SettingsView({ access }: { access: Access }) {
         event.data?.source !== "userscript"
       )
         return;
-      setBridgeVersion(event.data.version || "");
-      setBridge("active");
+      applyBridgeVersion(event.data.version || "");
     };
     addEventListener("message", receive);
     setBridge("checking");
     window.postMessage({ type: "EMOTE_FORGE_BRIDGE_PROBE" }, location.origin);
     const timer = setTimeout(
       () =>
-        setBridge((current) => (current === "active" ? current : "inactive")),
+        setBridge((current) =>
+          current === "active" || current === "outdated"
+            ? current
+            : "inactive",
+        ),
       1800,
     );
     return () => {
       clearTimeout(timer);
       removeEventListener("message", receive);
     };
-  }, []);
+  }, [applyBridgeVersion]);
   const checkBridge = () => {
     setBridge("checking");
+    let answered = false;
+    const directReceive = (event: MessageEvent) => {
+      if (
+        event.source !== window ||
+        event.data?.type !== "EMOTE_FORGE_BRIDGE_STATUS" ||
+        event.data?.source !== "userscript"
+      )
+        return;
+      answered = true;
+      removeEventListener("message", directReceive);
+      applyBridgeVersion(event.data.version || "");
+    };
+    addEventListener("message", directReceive);
     window.postMessage({ type: "EMOTE_FORGE_BRIDGE_PROBE" }, location.origin);
     const session = crypto.randomUUID(),
       origin = location.origin;
     setTimeout(() => {
-      if (bridge === "active") return;
+      removeEventListener("message", directReceive);
+      if (answered) return;
       const popup = window.open(
         `https://emoji.gg/submit?${new URLSearchParams({ browser_studio_probe: session, browser_studio_origin: origin })}`,
         "_blank",
@@ -1154,8 +1191,7 @@ function SettingsView({ access }: { access: Access }) {
           return;
         clearTimeout(timer);
         removeEventListener("message", receive);
-        setBridgeVersion(event.data.version || "");
-        setBridge("active");
+        applyBridgeVersion(event.data.version || "");
         setTimeout(() => popup?.close(), 350);
       };
       addEventListener("message", receive);
@@ -1171,7 +1207,12 @@ function SettingsView({ access }: { access: Access }) {
       active: {
         tone: "good" as const,
         icon: Wifi,
-        label: `Active${bridgeVersion ? ` · v${bridgeVersion}` : ""}`,
+        label: `Up to date · v${bridgeVersion}`,
+      },
+      outdated: {
+        tone: "warn" as const,
+        icon: AlertTriangle,
+        label: `Update required${bridgeVersion ? ` · v${bridgeVersion}` : ""}`,
       },
       inactive: { tone: "bad" as const, icon: WifiOff, label: "Not detected" },
     }[bridge],
@@ -1187,7 +1228,7 @@ function SettingsView({ access }: { access: Access }) {
             for this Studio.
           </p>
         </div>
-        <div className="bridge-state">
+        <div className={`bridge-state ${bridge}`}>
           <BridgeIcon
             className={bridge === "checking" ? "spin" : ""}
             size={18}
@@ -1200,23 +1241,27 @@ function SettingsView({ access }: { access: Access }) {
       </section>
       <div className="two-col">
         <Card>
-          <Title eyebrow="Required" title="Install the userscript" />
+          <Title
+            eyebrow="Required"
+            title={bridge === "outdated" ? "Update the userscript" : "Install the userscript"}
+          />
           <ol className="setup-steps">
             <li>Install the Tampermonkey browser extension.</li>
             <li>
-              Click <strong>Install userscript</strong> and confirm the script.
+              Click <strong>{bridge === "outdated" ? "Update userscript" : "Install userscript"}</strong> and confirm the {bridge === "outdated" ? "replacement" : "script"} in Tampermonkey.
             </li>
             <li>
-              Return here and click <strong>Check connection</strong>.
+              Return here, reload this page, then click <strong>Check connection</strong>.
             </li>
           </ol>
           <div className="settings-actions">
             <a
               className="button button-primary"
-              href="./uploader.user.js"
+              href={userscriptInstallUrl}
               target="_blank"
+              rel="noreferrer"
             >
-              <Download size={16} /> Install userscript
+              <Download size={16} /> {bridge === "outdated" ? "Update userscript" : "Install userscript"}
             </a>
             <Button onClick={checkBridge} disabled={bridge === "checking"}>
               <RefreshCw size={16} /> Check connection
@@ -1228,6 +1273,11 @@ function SettingsView({ access }: { access: Access }) {
               emoji.gg, then check again.
             </div>
           )}
+          {bridge === "outdated" && (
+            <div className="inline-notice warning">
+              Worker v{bridgeVersion || "unknown"} is installed, but Studio v{studioVersion} is required. Update it through Tampermonkey before uploading.
+            </div>
+          )}
         </Card>
         <Card>
           <Title eyebrow="Studio" title="Workspace" />
@@ -1235,7 +1285,7 @@ function SettingsView({ access }: { access: Access }) {
             <div>
               <dt>Version</dt>
               <dd>
-                <code>0.9.1</code>
+                <code>{studioVersion}</code>
               </dd>
             </div>
             <div>
