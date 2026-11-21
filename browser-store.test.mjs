@@ -20,3 +20,9 @@ test('file and metadata validation reject unsafe upload inputs',async()=>{
   await assert.rejects(()=>store.validateImportFile(new File(['not an image'],'fake.png',{type:'image/png'})),/not a valid PNG or GIF signature/i)
   assert.throws(()=>store.validateAssetMetadata({filename:'x.png',title:'X',tags:'emoji',description:'x',category_value:'1',license:'Unknown'}),/unsupported license/i)
 })
+
+test('recoverable failures reduce batches from ten to five to one',()=>{
+  assert.equal(store.reducedBatchSize(10,10),5)
+  assert.equal(store.reducedBatchSize(5,5),1)
+  assert.equal(store.reducedBatchSize(1,1),1)
+})

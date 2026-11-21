@@ -38,6 +38,7 @@ import {
   makeAsset,
   parseCsv,
   recoverInflight,
+  reducedBatchSize,
   removeAsset,
   sanitizeEmojiName,
   saveAsset,
@@ -295,14 +296,14 @@ export function HostedApp() {
               {nav === "library" && (
                 <Library assets={assets} refresh={refresh} />
               )}{" "}
-              {nav === "uploads" && (
+              <div hidden={nav !== "uploads"}>
                 <Uploads
                   assets={assets}
                   access={access}
                   refresh={refresh}
                   setNotice={setNotice}
                 />
-              )}{" "}
+              </div>{" "}
               {nav === "stats" && (
                 <Stats
                   assets={assets}
@@ -590,7 +591,20 @@ function Uploads({
       const worker = workerRef.current.find((item) => item.id === workerId);
       if (!worker?.ready || worker.batchId || !worker.win || worker.win.closed)
         return;
-      const ids = queueRef.current.splice(0, 10),
+      const firstQueued = assetsRef.current.find(
+          (asset) => asset.id === queueRef.current[0],
+        ),
+        requestedSize = firstQueued?.batchSize || 10,
+        ids: string[] = [];
+      for (let index = 0; index < queueRef.current.length && ids.length < requestedSize; ) {
+        const candidate = assetsRef.current.find(
+          (asset) => asset.id === queueRef.current[index],
+        );
+        if ((candidate?.batchSize || 10) === requestedSize) {
+          ids.push(queueRef.current.splice(index, 1)[0]);
+        } else index++;
+      }
+      const
         batchAssets = ids
           .map((id) => assetsRef.current.find((asset) => asset.id === id))
           .filter(Boolean) as BrowserAsset[];
@@ -705,10 +719,14 @@ function Uploads({
                   : outcome.status === "retry" && attempts < 3
                     ? "retry"
                     : "uncertain";
+            const batchSize = status === "retry"
+              ? reducedBatchSize(batchAssets.length, asset.batchSize || 10)
+              : asset.batchSize;
             if (status === "retry") queueRef.current.push(asset.id);
             return {
               ...asset,
               status,
+              batchSize,
               attempts,
               note: outcome.note || "",
               updatedAt: Date.now(),
@@ -729,7 +747,7 @@ function Uploads({
     addEventListener("message", receive);
     return () => removeEventListener("message", receive);
   }, [dispatch, refresh, session]);
-  const start = () => {
+  const start = async () => {
     if (!access.allowed) {
       setNotice(
         `Join ${access.serverName} with Discord before starting an upload.`,
@@ -742,6 +760,30 @@ function Uploads({
     if (!candidates.length) {
       setNotice("No pending or retry assets are available.");
       return;
+    }
+    const eligible: BrowserAsset[] = [];
+    for (const asset of candidates) {
+      try {
+        validateAssetMetadata(asset);
+        await validateImportFile(
+          new File([asset.file], asset.filename, { type: asset.file.type }),
+        );
+        eligible.push(asset);
+      } catch (error) {
+        await saveAsset({
+          ...asset,
+          note: `Preflight blocked: ${(error as Error).message}`,
+        });
+      }
+    }
+    if (!eligible.length) {
+      await refresh();
+      setNotice("No upload-ready assets passed preflight validation. Review the Library details.");
+      return;
+    }
+    if (eligible.length !== candidates.length) {
+      setNotice(`${candidates.length - eligible.length} invalid asset(s) were left out of this run. Review their Library details.`);
+      await refresh();
     }
     const nextSession = crypto.randomUUID(),
       opened: Worker[] = [];
@@ -763,7 +805,7 @@ function Uploads({
     setSession(nextSession);
     workerRef.current = opened;
     setWorkerState(opened);
-    queueRef.current = candidates.map((asset) => asset.id);
+    queueRef.current = eligible.map((asset) => asset.id);
     runningRef.current = true;
     setRunning(true);
     setPaused(false);
