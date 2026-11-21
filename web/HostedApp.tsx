@@ -26,6 +26,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Square,
   Trash2,
   Upload,
   Wifi,
@@ -742,6 +743,11 @@ function Uploads({
         worker.stage = "refreshing form";
         setWorkerState([...workerRef.current]);
         await refresh();
+        if (!runningRef.current) {
+          worker.win?.close();
+          worker.stage = "stopped";
+          setWorkerState([...workerRef.current]);
+        }
       }
     };
     addEventListener("message", receive);
@@ -831,17 +837,25 @@ function Uploads({
         </div>
         <div className="run-actions">
           {running ? (
-            <Button
-              onClick={() => {
-                setPaused(!paused);
-                pausedRef.current = !paused;
-                if (paused)
-                  workerRef.current.forEach((worker) => dispatch(worker.id));
-              }}
-            >
-              {paused ? <Play size={16} /> : <Pause size={16} />}{" "}
-              {paused ? "Resume" : "Pause"}
-            </Button>
+            <>
+              <Button
+                onClick={() => {
+                  setPaused(!paused);
+                  pausedRef.current = !paused;
+                  if (paused)
+                    workerRef.current.forEach((worker) => dispatch(worker.id));
+                }}
+              >
+                {paused ? <Play size={16} /> : <Pause size={16} />}{" "}
+                {paused ? "Resume" : "Pause"}
+              </Button>
+              <Button variant="danger" onClick={() => {
+                runningRef.current=false;pausedRef.current=true;setRunning(false);setPaused(true);
+                workerRef.current.forEach(worker=>{if(!worker.batchId){worker.win?.close();worker.stage="stopped"}});
+                setWorkerState([...workerRef.current]);
+                setNotice("Stopped dispatching. Active batches may finish; all waiting and uncertain records were preserved.");
+              }}><Square size={16}/> Stop safely</Button>
+            </>
           ) : (
             <Button
               variant="primary"
@@ -1608,7 +1622,7 @@ function InlineAssetEditor({
   after: () => void;
 }) {
   const [draft, setDraft] = useState<BrowserAsset>(asset),
-    [busy, setBusy] = useState<"save" | "delete" | "">(""),
+    [busy, setBusy] = useState<"save" | "delete" | "retry" | "">(""),
     [notice, setNotice] = useState("");
   useEffect(() => {
     setDraft(asset);
@@ -1624,11 +1638,7 @@ function InlineAssetEditor({
         <Button variant="ghost" onClick={close} aria-label="Close editor"><X size={16} /></Button>
       </div>
       <div className="editor-layout inline-editor-layout">
-        <img
-          className="preview large"
-          src={URL.createObjectURL(draft.file)}
-          alt=""
-        />
+        <BlobPreview file={draft.file} />
         <div className="dialog-form">
           <label>
             Name
@@ -1703,6 +1713,13 @@ function InlineAssetEditor({
             >
               {busy === "delete" ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />} Delete
             </Button>
+            {draft.status === "uncertain" && (
+              <Button onClick={async()=>{
+                if(!confirm("This upload may already exist on Emoji.gg. Retry only after verifying it was not accepted. Move it to the retry queue?"))return;
+                setBusy("retry");setNotice("");
+                try{const next={...draft,status:"retry" as const,note:"Manually approved for retry after uncertainty review"};await saveAsset(next);setDraft(next);await after();setNotice("Moved to retry.")}catch(error){setNotice((error as Error).message)}finally{setBusy("")}
+              }} disabled={Boolean(busy)}>{busy==="retry"?<LoaderCircle className="spin" size={16}/>:<RotateCcw size={16}/>} Retry after review</Button>
+            )}
             <Button
               variant="primary"
               onClick={async () => {
@@ -1731,6 +1748,12 @@ function InlineAssetEditor({
       </div>
     </div>
   );
+}
+
+function BlobPreview({file}:{file:Blob}) {
+  const [url,setUrl]=useState("");
+  useEffect(()=>{const next=URL.createObjectURL(file);setUrl(next);return()=>URL.revokeObjectURL(next)},[file]);
+  return url?<img className="preview large" src={url} alt=""/>:<div className="preview large"/>;
 }
 
 function AccessGate({ access }: { access: Access }) {
