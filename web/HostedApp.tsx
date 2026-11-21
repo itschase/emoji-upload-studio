@@ -42,6 +42,9 @@ import {
   sanitizeEmojiName,
   saveAsset,
   saveAssets,
+  saveAssetsIncrementally,
+  validateAssetMetadata,
+  validateImportFile,
 } from "./browser-store";
 import { categories, fmt, licenses, pendingDiscordReceipt } from "./lib";
 import { Badge, Button, Card, Dialog, Empty } from "./ui";
@@ -61,6 +64,11 @@ type Worker = {
   batchId?: string;
   assetIds?: string[];
   stage: string;
+};
+type WorkerOutcome = {
+  assetId?: string;
+  status: "submitted" | "retry" | "uncertain";
+  note?: string;
 };
 const navigation = [
   ["overview", "Overview", LayoutDashboard],
@@ -91,7 +99,10 @@ const localPreview =
   !import.meta.env.VITE_AUTH_URL;
 
 export function HostedApp() {
-  const [nav, setNav] = useState<Nav>("overview"),
+  const [nav, setNav] = useState<Nav>(() => {
+      const saved = localStorage.getItem("emoteForgeNav") as Nav | null;
+      return navigation.some(([id]) => id === saved) ? saved! : "overview";
+    }),
     [mobile, setMobile] = useState(false),
     [assets, setAssets] = useState<BrowserAsset[]>([]),
     [loading, setLoading] = useState(true),
@@ -109,6 +120,7 @@ export function HostedApp() {
   useEffect(() => {
     recoverInflight().then(refresh);
   }, [refresh]);
+  useEffect(() => localStorage.setItem("emoteForgeNav", nav), [nav]);
   useEffect(() => {
     const receipt =
       pendingDiscordReceipt || localStorage.getItem("emoteForgeAccess") || "";
@@ -664,10 +676,31 @@ function Uploads({
         const batchAssets = (worker.assetIds || [])
             .map((id) => assetsRef.current.find((asset) => asset.id === id))
             .filter(Boolean) as BrowserAsset[],
-          changed = batchAssets.map((asset, index) => {
-            const outcome = event.data.outcomes[index] || {
+          rawOutcomes: WorkerOutcome[] = Array.isArray(event.data.outcomes)
+            ? event.data.outcomes
+            : [],
+          duplicateOutcomeIds = new Set(
+            rawOutcomes
+              .map((outcome) => outcome?.assetId)
+              .filter(
+                (id: string | undefined, index: number, all: (string | undefined)[]) =>
+                  Boolean(id) && all.indexOf(id) !== index,
+              ),
+          ),
+          outcomeById = new Map(
+            rawOutcomes
+              .filter(
+                (outcome) =>
+                  outcome?.assetId && !duplicateOutcomeIds.has(outcome.assetId),
+              )
+              .map((outcome) => [outcome.assetId!, outcome] as const),
+          ),
+          changed = batchAssets.map((asset) => {
+            const outcome = outcomeById.get(asset.id) || {
                 status: "uncertain",
-                note: "No result returned",
+                note: duplicateOutcomeIds.has(asset.id)
+                  ? "Duplicate worker results were rejected for this asset"
+                  : "No stable result was returned for this asset",
               },
               attempts =
                 asset.attempts + (outcome.status === "submitted" ? 0 : 1),
@@ -1147,9 +1180,14 @@ function SettingsView({ access }: { access: Access }) {
     );
   }, []);
   useEffect(() => {
+    const readMarker = () => {
+      const version = document.documentElement.dataset.emoteForgeUserscriptVersion || "";
+      if (version) applyBridgeVersion(version);
+      return Boolean(version);
+    };
     const receive = (event: MessageEvent) => {
       if (
-        event.source !== window ||
+        event.origin !== location.origin ||
         event.data?.type !== "EMOTE_FORGE_BRIDGE_STATUS" ||
         event.data?.source !== "userscript"
       )
@@ -1158,7 +1196,10 @@ function SettingsView({ access }: { access: Access }) {
     };
     addEventListener("message", receive);
     setBridge("checking");
+    readMarker();
     window.postMessage({ type: "EMOTE_FORGE_BRIDGE_PROBE" }, location.origin);
+    const observer = new MutationObserver(readMarker);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-emote-forge-userscript-version"] });
     const timer = setTimeout(
       () =>
         setBridge((current) =>
@@ -1170,15 +1211,22 @@ function SettingsView({ access }: { access: Access }) {
     );
     return () => {
       clearTimeout(timer);
+      observer.disconnect();
       removeEventListener("message", receive);
     };
   }, [applyBridgeVersion]);
   const checkBridge = () => {
     setBridge("checking");
+    const marker = document.documentElement.dataset.emoteForgeUserscriptVersion || "";
+    if (marker) {
+      applyBridgeVersion(marker);
+      window.postMessage({ type: "EMOTE_FORGE_BRIDGE_PROBE" }, location.origin);
+      return;
+    }
     let answered = false;
     const directReceive = (event: MessageEvent) => {
       if (
-        event.source !== window ||
+        event.origin !== location.origin ||
         event.data?.type !== "EMOTE_FORGE_BRIDGE_STATUS" ||
         event.data?.source !== "userscript"
       )
@@ -1370,9 +1418,56 @@ function ImportDialog({
           .slice(0, 80);
       if (!safePack) throw new Error("Enter a pack name");
       if (!files.length) throw new Error("Select PNG or GIF images");
+      const duplicateFile = files.find(
+        (file, index) =>
+          files.findIndex(
+            (candidate) => candidate.name.toLowerCase() === file.name.toLowerCase(),
+          ) !== index,
+      );
+      if (duplicateFile)
+        throw new Error(`Duplicate selected filename: ${duplicateFile.name}`);
+      const duplicateRow = rows.find(
+        (row, index) =>
+          rows.findIndex(
+            (candidate) =>
+              String(candidate.filename || "").toLowerCase() ===
+              String(row.filename || "").toLowerCase(),
+          ) !== index,
+      );
+      if (duplicateRow)
+        throw new Error(`Duplicate CSV filename: ${duplicateRow.filename}`);
+      if (rows.length) {
+        const selected = new Set(files.map((file) => file.name.toLowerCase())),
+          listed = new Set(
+            rows.map((row) => String(row.filename || "").toLowerCase()),
+          ),
+          missingRow = files.find(
+            (file) => !listed.has(file.name.toLowerCase()),
+          ),
+          missingFile = rows.find(
+            (row) => !selected.has(String(row.filename || "").toLowerCase()),
+          );
+        if (missingRow)
+          throw new Error(`No CSV row for selected image: ${missingRow.name}`);
+        if (missingFile)
+          throw new Error(`No selected image for CSV row: ${missingFile.filename}`);
+      }
+      const existing = new Set(
+          (await listAssets()).map((asset) => asset.id.toLowerCase()),
+        ),
+        conflict = files.find((file) =>
+          existing.has(`${safePack}/${file.name}`.toLowerCase()),
+        );
+      if (conflict)
+        throw new Error(
+          `${conflict.name} already exists in ${safePack}. Existing records are preserved; choose another pack name or remove the existing record explicitly.`,
+        );
+      setNotice(`Validating ${files.length} images…`);
+      for (const file of files) await validateImportFile(file);
       const assets = files.map((file) =>
         makeAsset(safePack, file, byName.get(file.name.toLowerCase())),
       );
+      assets.forEach(validateAssetMetadata);
       const titleGroups = new Map<string, BrowserAsset[]>();
       for (const asset of assets) {
         const key = asset.title.toLowerCase();
@@ -1386,7 +1481,8 @@ function ImportDialog({
           asset.title = `${asset.title} ${identity}`.slice(0, 100);
         });
       }
-      await saveAssets(assets);
+      setNotice(`Saving ${assets.length} validated images…`);
+      await saveAssetsIncrementally(assets);
       setPack("");
       setFiles([]);
       setCsv(null);
@@ -1403,7 +1499,7 @@ function ImportDialog({
       open={open}
       onOpenChange={(value) => !value && close()}
       title="Import a prepared pack"
-      description="Select up to 500 PNG or GIF files. They remain in this browser's IndexedDB."
+      description="Select PNG or GIF files. They are validated, matched to CSV rows, and stored in this browser's IndexedDB."
     >
       <div className="dialog-form">
         <label>
@@ -1428,9 +1524,7 @@ function ImportDialog({
             type="file"
             accept=".png,.gif,image/png,image/gif"
             multiple
-            onChange={(event) =>
-              setFiles([...(event.target.files || [])].slice(0, 500))
-            }
+            onChange={(event) => setFiles([...(event.target.files || [])])}
           />
         </label>
         <div className="inline-notice">
