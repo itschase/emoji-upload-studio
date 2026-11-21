@@ -19,3 +19,8 @@ test('bridge probes only answer explicitly authorized Studio origins',()=>{
 test('batch-level failures refresh the worker so adaptive retries can continue',()=>{
   assert.match(source,/catch\(error\).*?send\('EMOTE_FORGE_RESULT'.*?location\.replace\(url\('\/submit\/sticker'\)\)/s)
 })
+
+test('explicit zero-result Emoji.gg errors are retryable, not uncertain',()=>{
+  assert.match(source,/explicitError&&results\.length===0.*?confirmedRetryable=true/s)
+  assert.match(source,/status=error\.confirmedRetryable\|\|!batch\?\.submittedToSite\?'retry':'uncertain'/)
+})
