@@ -23,6 +23,7 @@ test('file and metadata validation reject unsafe upload inputs',async()=>{
 
 test('recoverable failures reduce batches from ten to five to one',()=>{
   assert.equal(store.reducedBatchSize(10,10),5)
+  assert.equal(store.reducedBatchSize(8,10),5)
   assert.equal(store.reducedBatchSize(5,5),1)
   assert.equal(store.reducedBatchSize(1,1),1)
 })

@@ -15,3 +15,7 @@ test('bridge probes only answer explicitly authorized Studio origins',()=>{
   assert.equal(context.authorizedStudioOrigin('http://127.0.0.1:5173'),'http://127.0.0.1:5173')
   assert.equal(context.authorizedStudioOrigin('https://127.0.0.1:5173'),'')
 })
+
+test('batch-level failures refresh the worker so adaptive retries can continue',()=>{
+  assert.match(source,/catch\(error\).*?send\('EMOTE_FORGE_RESULT'.*?location\.replace\(url\('\/submit\/sticker'\)\)/s)
+})
