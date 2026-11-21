@@ -21,6 +21,7 @@ test('batch-level failures refresh the worker so adaptive retries can continue',
 })
 
 test('explicit zero-result Emoji.gg errors are retryable, not uncertain',()=>{
+  assert.match(source,/\.alert\.alert-danger/)
   assert.match(source,/explicitError&&results\.length===0.*?confirmedRetryable=true/s)
   assert.match(source,/status=error\.confirmedRetryable\|\|!batch\?\.submittedToSite\?'retry':'uncertain'/)
 })
