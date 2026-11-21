@@ -46,7 +46,7 @@ import {
   validateAssetMetadata,
   validateImportFile,
 } from "./browser-store";
-import { categories, fmt, licenses, pendingDiscordReceipt } from "./lib";
+import { categories, fmt, licenses } from "./lib";
 import { Badge, Button, Card, Dialog, Empty } from "./ui";
 
 type Nav = "overview" | "library" | "uploads" | "stats" | "access" | "settings";
@@ -122,10 +122,7 @@ export function HostedApp() {
   }, [refresh]);
   useEffect(() => localStorage.setItem("emoteForgeNav", nav), [nav]);
   useEffect(() => {
-    const receipt =
-      pendingDiscordReceipt || localStorage.getItem("emoteForgeAccess") || "";
-    if (pendingDiscordReceipt)
-      localStorage.setItem("emoteForgeAccess", pendingDiscordReceipt);
+    localStorage.removeItem("emoteForgeAccess");
     if (localPreview) {
       setAccess({
         allowed: true,
@@ -136,7 +133,6 @@ export function HostedApp() {
     }
     fetch(`${authBase}/access/verify`, {
       credentials: "include",
-      headers: receipt ? { Authorization: `Bearer ${receipt}` } : {},
     })
       .then(async (response) => {
         const body = await response.json();
@@ -171,7 +167,6 @@ export function HostedApp() {
       method: "POST",
       credentials: "include",
     }).catch(() => {});
-    localStorage.removeItem("emoteForgeAccess");
     location.reload();
   };
   if (!localPreview && !access.allowed) return <AccessGate access={access} />;
@@ -1168,7 +1163,7 @@ function AccessView({
 
 function SettingsView({ access }: { access: Access }) {
   const [bridge, setBridge] = useState<
-      "unknown" | "checking" | "active" | "outdated" | "inactive"
+      "unknown" | "checking" | "active" | "outdated" | "inactive" | "blocked"
     >("unknown"),
     [bridgeVersion, setBridgeVersion] = useState("");
   const applyBridgeVersion = useCallback((version: string) => {
@@ -1246,7 +1241,10 @@ function SettingsView({ access }: { access: Access }) {
         `https://emoji.gg/submit?${new URLSearchParams({ browser_studio_probe: session, browser_studio_origin: origin })}`,
         "_blank",
       );
-      const timer = setTimeout(() => setBridge("inactive"), 8000);
+      if (!popup) {
+        setBridge("blocked");
+        return;
+      }
       const receive = (event: MessageEvent) => {
         if (
           event.origin !== "https://emoji.gg" ||
@@ -1260,6 +1258,10 @@ function SettingsView({ access }: { access: Access }) {
         setTimeout(() => popup?.close(), 350);
       };
       addEventListener("message", receive);
+      const timer = setTimeout(() => {
+        removeEventListener("message", receive);
+        setBridge("inactive");
+      }, 8000);
     }, 350);
   };
   const state = {
@@ -1280,6 +1282,7 @@ function SettingsView({ access }: { access: Access }) {
         label: `Update required${bridgeVersion ? ` · v${bridgeVersion}` : ""}`,
       },
       inactive: { tone: "bad" as const, icon: WifiOff, label: "Not detected" },
+      blocked: { tone: "warn" as const, icon: AlertTriangle, label: "Popup blocked" },
     }[bridge],
     BridgeIcon = state.icon;
   return (
@@ -1346,6 +1349,11 @@ function SettingsView({ access }: { access: Access }) {
             <div className="inline-notice">
               The bridge did not answer. Confirm Tampermonkey is enabled for
               emoji.gg, then check again.
+            </div>
+          )}
+          {bridge === "blocked" && (
+            <div className="inline-notice warning">
+              The browser blocked the Emoji.gg connection check. Allow popups for Emote Forge, then check again. This does not mean the userscript is missing.
             </div>
           )}
           {bridge === "outdated" && (

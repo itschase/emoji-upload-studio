@@ -14,9 +14,10 @@ type AccountState={username?:string;profileUrl?:string;avatarUrl?:string;observe
 const navigation=[['overview','Overview',LayoutDashboard],['library','Library',BookImage],['uploads','Uploads',MonitorUp],['stats','Stats',BarChart3],['account','Emoji.gg Account',CircleUserRound],['settings','Settings',Settings]] as const
 
 export function App(){
-  const [nav,setNav]=useState<Nav>('overview'),[mobile,setMobile]=useState(false),[status,setStatus]=useState<Status|null>(null),[folders,setFolders]=useState<Folder[]>([]),[account,setAccount]=useState<AccountState>({}),[error,setError]=useState(''),[importOpen,setImportOpen]=useState(false)
+  const [nav,setNav]=useState<Nav>(()=>{const value=localStorage.getItem('emoteForgeLocalNav') as Nav|null;return navigation.some(([id])=>id===value)?value!:'overview'}),[mobile,setMobile]=useState(false),[status,setStatus]=useState<Status|null>(null),[folders,setFolders]=useState<Folder[]>([]),[account,setAccount]=useState<AccountState>({}),[error,setError]=useState(''),[importOpen,setImportOpen]=useState(false)
   const refresh=useCallback(async()=>{try{const [next,folderData,accountData]=await Promise.all([api<Status>('status'),api<{folders:Folder[]}>('folders'),api<AccountState>('account')]);setStatus(next);setFolders(folderData.folders);setAccount(accountData);setError('')}catch(e){setError((e as Error).message)}},[])
   useEffect(()=>{refresh();const timer=setInterval(refresh,1800);return()=>clearInterval(timer)},[refresh])
+  useEffect(()=>localStorage.setItem('emoteForgeLocalNav',nav),[nav])
   const current=navigation.find(([id])=>id===nav)!
   return <div className="app-shell">
     <aside className={mobile?'sidebar mobile-open':'sidebar'}>
