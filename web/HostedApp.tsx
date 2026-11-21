@@ -26,6 +26,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  Square,
   Trash2,
   Upload,
   Wifi,
@@ -38,12 +39,16 @@ import {
   makeAsset,
   parseCsv,
   recoverInflight,
+  reducedBatchSize,
   removeAsset,
   sanitizeEmojiName,
   saveAsset,
   saveAssets,
+  saveAssetsIncrementally,
+  validateAssetMetadata,
+  validateImportFile,
 } from "./browser-store";
-import { categories, fmt, licenses, pendingDiscordReceipt } from "./lib";
+import { categories, fmt, licenses } from "./lib";
 import { Badge, Button, Card, Dialog, Empty } from "./ui";
 
 type Nav = "overview" | "library" | "uploads" | "stats" | "access" | "settings";
@@ -61,6 +66,11 @@ type Worker = {
   batchId?: string;
   assetIds?: string[];
   stage: string;
+};
+type WorkerOutcome = {
+  assetId?: string;
+  status: "submitted" | "retry" | "uncertain";
+  note?: string;
 };
 const navigation = [
   ["overview", "Overview", LayoutDashboard],
@@ -91,7 +101,10 @@ const localPreview =
   !import.meta.env.VITE_AUTH_URL;
 
 export function HostedApp() {
-  const [nav, setNav] = useState<Nav>("overview"),
+  const [nav, setNav] = useState<Nav>(() => {
+      const saved = localStorage.getItem("emoteForgeNav") as Nav | null;
+      return navigation.some(([id]) => id === saved) ? saved! : "overview";
+    }),
     [mobile, setMobile] = useState(false),
     [assets, setAssets] = useState<BrowserAsset[]>([]),
     [loading, setLoading] = useState(true),
@@ -109,11 +122,9 @@ export function HostedApp() {
   useEffect(() => {
     recoverInflight().then(refresh);
   }, [refresh]);
+  useEffect(() => localStorage.setItem("emoteForgeNav", nav), [nav]);
   useEffect(() => {
-    const receipt =
-      pendingDiscordReceipt || localStorage.getItem("emoteForgeAccess") || "";
-    if (pendingDiscordReceipt)
-      localStorage.setItem("emoteForgeAccess", pendingDiscordReceipt);
+    localStorage.removeItem("emoteForgeAccess");
     if (localPreview) {
       setAccess({
         allowed: true,
@@ -124,7 +135,6 @@ export function HostedApp() {
     }
     fetch(`${authBase}/access/verify`, {
       credentials: "include",
-      headers: receipt ? { Authorization: `Bearer ${receipt}` } : {},
     })
       .then(async (response) => {
         const body = await response.json();
@@ -159,7 +169,6 @@ export function HostedApp() {
       method: "POST",
       credentials: "include",
     }).catch(() => {});
-    localStorage.removeItem("emoteForgeAccess");
     location.reload();
   };
   if (!localPreview && !access.allowed) return <AccessGate access={access} />;
@@ -288,14 +297,14 @@ export function HostedApp() {
               {nav === "library" && (
                 <Library assets={assets} refresh={refresh} />
               )}{" "}
-              {nav === "uploads" && (
+              <div hidden={nav !== "uploads"}>
                 <Uploads
                   assets={assets}
                   access={access}
                   refresh={refresh}
                   setNotice={setNotice}
                 />
-              )}{" "}
+              </div>{" "}
               {nav === "stats" && (
                 <Stats
                   assets={assets}
@@ -583,7 +592,20 @@ function Uploads({
       const worker = workerRef.current.find((item) => item.id === workerId);
       if (!worker?.ready || worker.batchId || !worker.win || worker.win.closed)
         return;
-      const ids = queueRef.current.splice(0, 10),
+      const firstQueued = assetsRef.current.find(
+          (asset) => asset.id === queueRef.current[0],
+        ),
+        requestedSize = firstQueued?.batchSize || 10,
+        ids: string[] = [];
+      for (let index = 0; index < queueRef.current.length && ids.length < requestedSize; ) {
+        const candidate = assetsRef.current.find(
+          (asset) => asset.id === queueRef.current[index],
+        );
+        if ((candidate?.batchSize || 10) === requestedSize) {
+          ids.push(queueRef.current.splice(index, 1)[0]);
+        } else index++;
+      }
+      const
         batchAssets = ids
           .map((id) => assetsRef.current.find((asset) => asset.id === id))
           .filter(Boolean) as BrowserAsset[];
@@ -664,10 +686,31 @@ function Uploads({
         const batchAssets = (worker.assetIds || [])
             .map((id) => assetsRef.current.find((asset) => asset.id === id))
             .filter(Boolean) as BrowserAsset[],
-          changed = batchAssets.map((asset, index) => {
-            const outcome = event.data.outcomes[index] || {
+          rawOutcomes: WorkerOutcome[] = Array.isArray(event.data.outcomes)
+            ? event.data.outcomes
+            : [],
+          duplicateOutcomeIds = new Set(
+            rawOutcomes
+              .map((outcome) => outcome?.assetId)
+              .filter(
+                (id: string | undefined, index: number, all: (string | undefined)[]) =>
+                  Boolean(id) && all.indexOf(id) !== index,
+              ),
+          ),
+          outcomeById = new Map(
+            rawOutcomes
+              .filter(
+                (outcome) =>
+                  outcome?.assetId && !duplicateOutcomeIds.has(outcome.assetId),
+              )
+              .map((outcome) => [outcome.assetId!, outcome] as const),
+          ),
+          changed = batchAssets.map((asset) => {
+            const outcome = outcomeById.get(asset.id) || {
                 status: "uncertain",
-                note: "No result returned",
+                note: duplicateOutcomeIds.has(asset.id)
+                  ? "Duplicate worker results were rejected for this asset"
+                  : "No stable result was returned for this asset",
               },
               attempts =
                 asset.attempts + (outcome.status === "submitted" ? 0 : 1),
@@ -677,10 +720,14 @@ function Uploads({
                   : outcome.status === "retry" && attempts < 3
                     ? "retry"
                     : "uncertain";
+            const batchSize = status === "retry"
+              ? reducedBatchSize(batchAssets.length, asset.batchSize || 10)
+              : asset.batchSize;
             if (status === "retry") queueRef.current.push(asset.id);
             return {
               ...asset,
               status,
+              batchSize,
               attempts,
               note: outcome.note || "",
               updatedAt: Date.now(),
@@ -696,12 +743,17 @@ function Uploads({
         worker.stage = "refreshing form";
         setWorkerState([...workerRef.current]);
         await refresh();
+        if (!runningRef.current) {
+          worker.win?.close();
+          worker.stage = "stopped";
+          setWorkerState([...workerRef.current]);
+        }
       }
     };
     addEventListener("message", receive);
     return () => removeEventListener("message", receive);
   }, [dispatch, refresh, session]);
-  const start = () => {
+  const start = async () => {
     if (!access.allowed) {
       setNotice(
         `Join ${access.serverName} with Discord before starting an upload.`,
@@ -714,6 +766,30 @@ function Uploads({
     if (!candidates.length) {
       setNotice("No pending or retry assets are available.");
       return;
+    }
+    const eligible: BrowserAsset[] = [];
+    for (const asset of candidates) {
+      try {
+        validateAssetMetadata(asset);
+        await validateImportFile(
+          new File([asset.file], asset.filename, { type: asset.file.type }),
+        );
+        eligible.push(asset);
+      } catch (error) {
+        await saveAsset({
+          ...asset,
+          note: `Preflight blocked: ${(error as Error).message}`,
+        });
+      }
+    }
+    if (!eligible.length) {
+      await refresh();
+      setNotice("No upload-ready assets passed preflight validation. Review the Library details.");
+      return;
+    }
+    if (eligible.length !== candidates.length) {
+      setNotice(`${candidates.length - eligible.length} invalid asset(s) were left out of this run. Review their Library details.`);
+      await refresh();
     }
     const nextSession = crypto.randomUUID(),
       opened: Worker[] = [];
@@ -735,7 +811,7 @@ function Uploads({
     setSession(nextSession);
     workerRef.current = opened;
     setWorkerState(opened);
-    queueRef.current = candidates.map((asset) => asset.id);
+    queueRef.current = eligible.map((asset) => asset.id);
     runningRef.current = true;
     setRunning(true);
     setPaused(false);
@@ -761,17 +837,25 @@ function Uploads({
         </div>
         <div className="run-actions">
           {running ? (
-            <Button
-              onClick={() => {
-                setPaused(!paused);
-                pausedRef.current = !paused;
-                if (paused)
-                  workerRef.current.forEach((worker) => dispatch(worker.id));
-              }}
-            >
-              {paused ? <Play size={16} /> : <Pause size={16} />}{" "}
-              {paused ? "Resume" : "Pause"}
-            </Button>
+            <>
+              <Button
+                onClick={() => {
+                  setPaused(!paused);
+                  pausedRef.current = !paused;
+                  if (paused)
+                    workerRef.current.forEach((worker) => dispatch(worker.id));
+                }}
+              >
+                {paused ? <Play size={16} /> : <Pause size={16} />}{" "}
+                {paused ? "Resume" : "Pause"}
+              </Button>
+              <Button variant="danger" onClick={() => {
+                runningRef.current=false;pausedRef.current=true;setRunning(false);setPaused(true);
+                workerRef.current.forEach(worker=>{if(!worker.batchId){worker.win?.close();worker.stage="stopped"}});
+                setWorkerState([...workerRef.current]);
+                setNotice("Stopped dispatching. Active batches may finish; all waiting and uncertain records were preserved.");
+              }}><Square size={16}/> Stop safely</Button>
+            </>
           ) : (
             <Button
               variant="primary"
@@ -1135,7 +1219,7 @@ function AccessView({
 
 function SettingsView({ access }: { access: Access }) {
   const [bridge, setBridge] = useState<
-      "unknown" | "checking" | "active" | "outdated" | "inactive"
+      "unknown" | "checking" | "active" | "outdated" | "inactive" | "blocked"
     >("unknown"),
     [bridgeVersion, setBridgeVersion] = useState("");
   const applyBridgeVersion = useCallback((version: string) => {
@@ -1147,9 +1231,14 @@ function SettingsView({ access }: { access: Access }) {
     );
   }, []);
   useEffect(() => {
+    const readMarker = () => {
+      const version = document.documentElement.dataset.emoteForgeUserscriptVersion || "";
+      if (version) applyBridgeVersion(version);
+      return Boolean(version);
+    };
     const receive = (event: MessageEvent) => {
       if (
-        event.source !== window ||
+        event.origin !== location.origin ||
         event.data?.type !== "EMOTE_FORGE_BRIDGE_STATUS" ||
         event.data?.source !== "userscript"
       )
@@ -1158,7 +1247,10 @@ function SettingsView({ access }: { access: Access }) {
     };
     addEventListener("message", receive);
     setBridge("checking");
+    readMarker();
     window.postMessage({ type: "EMOTE_FORGE_BRIDGE_PROBE" }, location.origin);
+    const observer = new MutationObserver(readMarker);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-emote-forge-userscript-version"] });
     const timer = setTimeout(
       () =>
         setBridge((current) =>
@@ -1170,15 +1262,22 @@ function SettingsView({ access }: { access: Access }) {
     );
     return () => {
       clearTimeout(timer);
+      observer.disconnect();
       removeEventListener("message", receive);
     };
   }, [applyBridgeVersion]);
   const checkBridge = () => {
     setBridge("checking");
+    const marker = document.documentElement.dataset.emoteForgeUserscriptVersion || "";
+    if (marker) {
+      applyBridgeVersion(marker);
+      window.postMessage({ type: "EMOTE_FORGE_BRIDGE_PROBE" }, location.origin);
+      return;
+    }
     let answered = false;
     const directReceive = (event: MessageEvent) => {
       if (
-        event.source !== window ||
+        event.origin !== location.origin ||
         event.data?.type !== "EMOTE_FORGE_BRIDGE_STATUS" ||
         event.data?.source !== "userscript"
       )
@@ -1198,7 +1297,10 @@ function SettingsView({ access }: { access: Access }) {
         `https://emoji.gg/submit?${new URLSearchParams({ browser_studio_probe: session, browser_studio_origin: origin })}`,
         "_blank",
       );
-      const timer = setTimeout(() => setBridge("inactive"), 8000);
+      if (!popup) {
+        setBridge("blocked");
+        return;
+      }
       const receive = (event: MessageEvent) => {
         if (
           event.origin !== "https://emoji.gg" ||
@@ -1212,6 +1314,10 @@ function SettingsView({ access }: { access: Access }) {
         setTimeout(() => popup?.close(), 350);
       };
       addEventListener("message", receive);
+      const timer = setTimeout(() => {
+        removeEventListener("message", receive);
+        setBridge("inactive");
+      }, 8000);
     }, 350);
   };
   const state = {
@@ -1232,6 +1338,7 @@ function SettingsView({ access }: { access: Access }) {
         label: `Update required${bridgeVersion ? ` · v${bridgeVersion}` : ""}`,
       },
       inactive: { tone: "bad" as const, icon: WifiOff, label: "Not detected" },
+      blocked: { tone: "warn" as const, icon: AlertTriangle, label: "Popup blocked" },
     }[bridge],
     BridgeIcon = state.icon;
   return (
@@ -1298,6 +1405,11 @@ function SettingsView({ access }: { access: Access }) {
             <div className="inline-notice">
               The bridge did not answer. Confirm Tampermonkey is enabled for
               emoji.gg, then check again.
+            </div>
+          )}
+          {bridge === "blocked" && (
+            <div className="inline-notice warning">
+              The browser blocked the Emoji.gg connection check. Allow popups for Emote Forge, then check again. This does not mean the userscript is missing.
             </div>
           )}
           {bridge === "outdated" && (
@@ -1370,9 +1482,56 @@ function ImportDialog({
           .slice(0, 80);
       if (!safePack) throw new Error("Enter a pack name");
       if (!files.length) throw new Error("Select PNG or GIF images");
+      const duplicateFile = files.find(
+        (file, index) =>
+          files.findIndex(
+            (candidate) => candidate.name.toLowerCase() === file.name.toLowerCase(),
+          ) !== index,
+      );
+      if (duplicateFile)
+        throw new Error(`Duplicate selected filename: ${duplicateFile.name}`);
+      const duplicateRow = rows.find(
+        (row, index) =>
+          rows.findIndex(
+            (candidate) =>
+              String(candidate.filename || "").toLowerCase() ===
+              String(row.filename || "").toLowerCase(),
+          ) !== index,
+      );
+      if (duplicateRow)
+        throw new Error(`Duplicate CSV filename: ${duplicateRow.filename}`);
+      if (rows.length) {
+        const selected = new Set(files.map((file) => file.name.toLowerCase())),
+          listed = new Set(
+            rows.map((row) => String(row.filename || "").toLowerCase()),
+          ),
+          missingRow = files.find(
+            (file) => !listed.has(file.name.toLowerCase()),
+          ),
+          missingFile = rows.find(
+            (row) => !selected.has(String(row.filename || "").toLowerCase()),
+          );
+        if (missingRow)
+          throw new Error(`No CSV row for selected image: ${missingRow.name}`);
+        if (missingFile)
+          throw new Error(`No selected image for CSV row: ${missingFile.filename}`);
+      }
+      const existing = new Set(
+          (await listAssets()).map((asset) => asset.id.toLowerCase()),
+        ),
+        conflict = files.find((file) =>
+          existing.has(`${safePack}/${file.name}`.toLowerCase()),
+        );
+      if (conflict)
+        throw new Error(
+          `${conflict.name} already exists in ${safePack}. Existing records are preserved; choose another pack name or remove the existing record explicitly.`,
+        );
+      setNotice(`Validating ${files.length} images…`);
+      for (const file of files) await validateImportFile(file);
       const assets = files.map((file) =>
         makeAsset(safePack, file, byName.get(file.name.toLowerCase())),
       );
+      assets.forEach(validateAssetMetadata);
       const titleGroups = new Map<string, BrowserAsset[]>();
       for (const asset of assets) {
         const key = asset.title.toLowerCase();
@@ -1386,7 +1545,8 @@ function ImportDialog({
           asset.title = `${asset.title} ${identity}`.slice(0, 100);
         });
       }
-      await saveAssets(assets);
+      setNotice(`Saving ${assets.length} validated images…`);
+      await saveAssetsIncrementally(assets);
       setPack("");
       setFiles([]);
       setCsv(null);
@@ -1403,7 +1563,7 @@ function ImportDialog({
       open={open}
       onOpenChange={(value) => !value && close()}
       title="Import a prepared pack"
-      description="Select up to 500 PNG or GIF files. They remain in this browser's IndexedDB."
+      description="Select PNG or GIF files. They are validated, matched to CSV rows, and stored in this browser's IndexedDB."
     >
       <div className="dialog-form">
         <label>
@@ -1428,9 +1588,7 @@ function ImportDialog({
             type="file"
             accept=".png,.gif,image/png,image/gif"
             multiple
-            onChange={(event) =>
-              setFiles([...(event.target.files || [])].slice(0, 500))
-            }
+            onChange={(event) => setFiles([...(event.target.files || [])])}
           />
         </label>
         <div className="inline-notice">
@@ -1464,7 +1622,7 @@ function InlineAssetEditor({
   after: () => void;
 }) {
   const [draft, setDraft] = useState<BrowserAsset>(asset),
-    [busy, setBusy] = useState<"save" | "delete" | "">(""),
+    [busy, setBusy] = useState<"save" | "delete" | "retry" | "">(""),
     [notice, setNotice] = useState("");
   useEffect(() => {
     setDraft(asset);
@@ -1480,11 +1638,7 @@ function InlineAssetEditor({
         <Button variant="ghost" onClick={close} aria-label="Close editor"><X size={16} /></Button>
       </div>
       <div className="editor-layout inline-editor-layout">
-        <img
-          className="preview large"
-          src={URL.createObjectURL(draft.file)}
-          alt=""
-        />
+        <BlobPreview file={draft.file} />
         <div className="dialog-form">
           <label>
             Name
@@ -1559,6 +1713,13 @@ function InlineAssetEditor({
             >
               {busy === "delete" ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />} Delete
             </Button>
+            {draft.status === "uncertain" && (
+              <Button onClick={async()=>{
+                if(!confirm("This upload may already exist on Emoji.gg. Retry only after verifying it was not accepted. Move it to the retry queue?"))return;
+                setBusy("retry");setNotice("");
+                try{const next={...draft,status:"retry" as const,note:"Manually approved for retry after uncertainty review"};await saveAsset(next);setDraft(next);await after();setNotice("Moved to retry.")}catch(error){setNotice((error as Error).message)}finally{setBusy("")}
+              }} disabled={Boolean(busy)}>{busy==="retry"?<LoaderCircle className="spin" size={16}/>:<RotateCcw size={16}/>} Retry after review</Button>
+            )}
             <Button
               variant="primary"
               onClick={async () => {
@@ -1587,6 +1748,12 @@ function InlineAssetEditor({
       </div>
     </div>
   );
+}
+
+function BlobPreview({file}:{file:Blob}) {
+  const [url,setUrl]=useState("");
+  useEffect(()=>{const next=URL.createObjectURL(file);setUrl(next);return()=>URL.revokeObjectURL(next)},[file]);
+  return url?<img className="preview large" src={url} alt=""/>:<div className="preview large"/>;
 }
 
 function AccessGate({ access }: { access: Access }) {
